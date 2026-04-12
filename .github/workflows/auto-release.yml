@@ -1,0 +1,175 @@
+name: Auto Build & Release
+
+# Triggers on every push to main, or manually via the Actions tab
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'download-site/**'
+      - '*.md'
+      - '.gitignore'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ─── Build Android APK (on Ubuntu) ───
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Protobuf
+        uses: ./.github/actions/setup-protobuf
+
+      - name: Build APK (Foss Release)
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleFossRelease --no-configuration-cache --warning-mode summary
+
+      - name: Find and Rename APK
+        run: |
+          mkdir -p release-output
+          APK=$(find app/build/outputs/apk/foss/release -name "*.apk" | head -1)
+          if [ -n "$APK" ]; then
+            cp "$APK" release-output/Metrolist-Android.apk
+          fi
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: release-output/Metrolist-Android.apk
+
+  # ─── Build Linux .deb (on Ubuntu) ───
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg
+
+      - name: Build Linux DEB
+        run: |
+          chmod +x gradlew
+          ./gradlew :desktop:packageDeb --no-configuration-cache --warning-mode summary
+
+      - name: Find and Rename DEB
+        run: |
+          mkdir -p release-output
+          DEB=$(find desktop/build/compose/binaries -name "*.deb" | head -1)
+          if [ -n "$DEB" ]; then
+            cp "$DEB" release-output/Metrolist-Linux.deb
+          fi
+
+      - name: Upload DEB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: release-output/Metrolist-Linux.deb
+
+  # ─── Build Windows .msi (on Windows) ───
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Windows MSI
+        run: ./gradlew :desktop:packageMsi --no-configuration-cache --warning-mode summary
+
+      - name: Find and Rename MSI
+        shell: bash
+        run: |
+          mkdir -p release-output
+          MSI=$(find desktop/build/compose/binaries -name "*.msi" | head -1)
+          if [ -n "$MSI" ]; then
+            cp "$MSI" release-output/Metrolist-Windows.msi
+          fi
+
+      - name: Upload MSI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: release-output/Metrolist-Windows.msi
+
+  # ─── Combine all artifacts into a single GitHub Release ───
+  create-release:
+    needs: [build-android, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from build.gradle.kts
+        id: version
+        run: |
+          VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts || echo "0.0.0")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts/
+
+      - name: Organize release files
+        run: |
+          mkdir -p release-files
+          find all-artifacts -type f \( -name "*.apk" -o -name "*.deb" -o -name "*.msi" \) -exec cp {} release-files/ \;
+          echo "Files ready for release:"
+          ls -lh release-files/
+
+      - name: Delete existing release with same tag (if any)
+        run: |
+          gh release delete "v${{ steps.version.outputs.version }}" --yes || true
+          git push --delete origin "v${{ steps.version.outputs.version }}" || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "Metrolist v${{ steps.version.outputs.version }}" \
+            --notes "Automated release of Metrolist v${{ steps.version.outputs.version }}.
+
+          ## Downloads
+          - **Android**: Metrolist-Android.apk
+          - **Linux**: Metrolist-Linux.deb (install with \`sudo dpkg -i Metrolist-Linux.deb\`)
+          - **Windows**: Metrolist-Windows.msi (run the installer)" \
+            --latest \
+            release-files/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
