@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: metrolist-sync-relay
+    env: docker
+    plan: free
+    dockerfilePath: ./relay-server/Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: 8080
