@@ -332,7 +332,36 @@ class PlayerState {
         }
     }
 
+    fun resume() {
+        if (!isPlaying) {
+            mpv.togglePause()
+            isPlaying = true
+            startPositionUpdates()
+        }
+    }
+
+    fun pause() {
+        if (isPlaying) {
+            mpv.togglePause()
+            isPlaying = false
+            stopPositionUpdates()
+        }
+    }
+
+    /** Play a song by its YouTube video ID (creates a minimal PlayerSong). */
+    fun playSongById(videoId: String) {
+        val song = PlayerSong(
+            id        = videoId,
+            title     = "Loading…",
+            artist    = "",
+            albumArt  = null,
+            durationMs = 0L,
+        )
+        playSong(song)
+    }
+
     fun toggleShuffle() { isShuffled = !isShuffled }
+
     fun cycleRepeat() {
         repeatMode = when (repeatMode) {
             RepeatMode.OFF -> RepeatMode.ALL

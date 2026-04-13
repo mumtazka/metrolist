@@ -13,6 +13,7 @@ import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
@@ -23,6 +24,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 // ============================================================
 // Data Models
@@ -87,22 +89,35 @@ data class ConnectedDevice(
 object RoomManager {
     // accountHash -> list of connected devices
     private val rooms = ConcurrentHashMap<String, MutableList<ConnectedDevice>>()
+    private val totalConnections = AtomicInteger(0)
+    private const val MAX_CONNECTIONS = 512
 
-    fun addDevice(device: ConnectedDevice) {
+    fun tryAddDevice(device: ConnectedDevice): Boolean {
+        if (totalConnections.get() >= MAX_CONNECTIONS) return false
         val room = rooms.getOrPut(device.accountHash) { mutableListOf() }
-        room.removeAll { it.deviceId == device.deviceId } // Remove stale sessions
-        room.add(device)
+        synchronized(room) {
+            room.removeAll { it.deviceId == device.deviceId } // Remove stale sessions
+            room.add(device)
+        }
+        totalConnections.incrementAndGet()
+        return true
     }
 
+    // Keep old addDevice for backward compat — calls tryAddDevice ignoring result
+    fun addDevice(device: ConnectedDevice) { tryAddDevice(device) }
+
     fun removeDevice(accountHash: String, deviceId: String) {
-        rooms[accountHash]?.removeAll { it.deviceId == deviceId }
-        if (rooms[accountHash]?.isEmpty() == true) {
-            rooms.remove(accountHash)
+        val room = rooms[accountHash] ?: return
+        val removed: Boolean
+        synchronized(room) {
+            removed = room.removeAll { it.deviceId == deviceId }
+            if (room.isEmpty()) rooms.remove(accountHash)
         }
+        if (removed) totalConnections.decrementAndGet()
     }
 
     fun getRoom(accountHash: String): List<ConnectedDevice> {
-        return rooms[accountHash] ?: emptyList()
+        return rooms[accountHash]?.toList() ?: emptyList()
     }
 
     fun getOtherDevices(accountHash: String, deviceId: String): List<ConnectedDevice> {
@@ -119,8 +134,8 @@ object RoomManager {
 
     fun getStats(): Map<String, Int> {
         return mapOf(
-            "rooms" to rooms.size,
-            "devices" to rooms.values.sumOf { it.size },
+            "rooms"   to rooms.size,
+            "devices" to totalConnections.get(),
         )
     }
 }
@@ -152,6 +167,10 @@ private val json = Json {
     prettyPrint = false
 }
 
+private val ADMIN_KEY: String = System.getenv("RELAY_ADMIN_KEY") ?: ""
+private val ACCOUNT_HASH_REGEX = Regex("^[0-9a-f]{64}$")
+private val DEVICE_ID_REGEX    = Regex("^[A-Za-z0-9\\-_]{1,128}$")
+
 fun main() {
     val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
 
@@ -159,7 +178,7 @@ fun main() {
         install(WebSockets) {
             pingPeriod = Duration.ofSeconds(15)
             timeout = Duration.ofSeconds(30)
-            maxFrameSize = Long.MAX_VALUE
+            maxFrameSize = 65_536L  // 64 KB — prevents memory-exhaustion attacks
             masking = false
         }
         install(ContentNegotiation) {
@@ -172,7 +191,13 @@ fun main() {
                 call.respondText("Metrolist Sync Relay Server is running")
             }
 
+            // Stats endpoint — protected by admin key
             get("/stats") {
+                val key = call.request.header("X-Admin-Key") ?: ""
+                if (ADMIN_KEY.isNotBlank() && key != ADMIN_KEY) {
+                    call.respond(io.ktor.http.HttpStatusCode.Unauthorized, "Unauthorized")
+                    return@get
+                }
                 val stats = RoomManager.getStats()
                 call.respondText("Rooms: ${stats["rooms"]}, Devices: ${stats["devices"]}")
             }
@@ -185,30 +210,53 @@ fun main() {
                     for (frame in incoming) {
                         if (frame is Frame.Text) {
                             val text = frame.readText()
-                            val message = json.decodeFromString(SyncMessage.serializer(), text)
+                            // Guard against suspiciously large payloads (belt+suspenders)
+                            if (text.length > 65_536) {
+                                close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Payload too large"))
+                                break
+                            }
+                            val message = try {
+                                json.decodeFromString(SyncMessage.serializer(), text)
+                            } catch (_: Exception) {
+                                continue // ignore malformed frames
+                            }
 
                             when (message.type) {
                                 // --- REGISTER: Device comes online ---
                                 MessageTypes.REGISTER -> {
-                                    val payload = json.decodeFromString(
-                                        RegisterPayload.serializer(), message.payload
-                                    )
+                                    val payload = try {
+                                        json.decodeFromString(RegisterPayload.serializer(), message.payload)
+                                    } catch (_: Exception) { continue }
+
+                                    // Validate account_hash (must be SHA-256 hex) and device_id
+                                    if (!ACCOUNT_HASH_REGEX.matches(payload.accountHash)) {
+                                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid account_hash"))
+                                        break
+                                    }
+                                    if (!DEVICE_ID_REGEX.matches(payload.deviceId)) {
+                                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Invalid device_id"))
+                                        break
+                                    }
 
                                     val device = ConnectedDevice(
-                                        deviceId = payload.deviceId,
-                                        deviceName = payload.deviceName,
+                                        deviceId    = payload.deviceId,
+                                        deviceName  = payload.deviceName.take(64), // clamp name length
                                         accountHash = payload.accountHash,
-                                        session = this,
-                                        state = DeviceState(
-                                            deviceId = payload.deviceId,
-                                            deviceName = payload.deviceName,
+                                        session     = this,
+                                        state       = DeviceState(
+                                            deviceId    = payload.deviceId,
+                                            deviceName  = payload.deviceName.take(64),
                                             accountHash = payload.accountHash,
                                         )
                                     )
-                                    currentDevice = device
-                                    RoomManager.addDevice(device)
 
-                                    println("[REGISTER] ${payload.deviceName} (${payload.deviceId}) joined room ${payload.accountHash}")
+                                    if (!RoomManager.tryAddDevice(device)) {
+                                        close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Server at capacity"))
+                                        break
+                                    }
+                                    currentDevice = device
+
+                                    println("[REGISTER] ${device.deviceName} (${device.deviceId.take(8)}) joined room ${device.accountHash.take(8)}…")
 
                                     // Notify other devices in the room
                                     val others = RoomManager.getOtherDevices(

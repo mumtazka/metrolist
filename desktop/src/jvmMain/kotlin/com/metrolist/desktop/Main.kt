@@ -40,6 +40,8 @@ import com.metrolist.desktop.viewmodel.DesktopViewModel
 import com.metrolist.innertube.models.*
 import com.metrolist.innertube.pages.HomePage
 import kotlinx.coroutines.delay
+import com.metrolist.desktop.sync.DesktopSyncClient
+import com.metrolist.desktop.ui.AsyncImage
 import java.awt.Desktop as AwtDesktop
 import java.net.URI
 
@@ -70,6 +72,10 @@ fun main() = application {
         val scope = rememberCoroutineScope()
         val viewModel = remember { DesktopViewModel(scope) }
         val playerState = remember { PlayerState() }
+        val syncClient = remember { com.metrolist.desktop.sync.DesktopSyncClient(
+            relayUrl = "wss://metrolistsyncrelay-ooae5v0w.b4a.run/sync",
+            playerState = playerState,
+        ) }
         var currentScreen by remember { mutableStateOf(Screen.HOME) }
         var searchQuery by remember { mutableStateOf("") }
         var pureBlack by remember { mutableStateOf(true) }
@@ -78,6 +84,24 @@ fun main() = application {
         // Load home on first launch
         LaunchedEffect(Unit) {
             viewModel.loadHome()
+        }
+
+        // Auto-connect sync when logged in
+        LaunchedEffect(viewModel.accountEmail) {
+            val email = viewModel.accountEmail
+            if (email != null) {
+                syncClient.connect(email)
+            } else {
+                syncClient.disconnect()
+            }
+        }
+
+        // Clean up on close
+        DisposableEffect(Unit) {
+            onDispose {
+                syncClient.disconnect()
+                playerState.cleanup()
+            }
         }
 
         MetrolistTheme(pureBlack = pureBlack, themeColor = themeColor) {
@@ -105,19 +129,21 @@ fun main() = application {
                                     viewModel,
                                     pureBlack, { pureBlack = it },
                                     themeColor, { themeColor = it },
+                                    syncClient,
                                 )
                             }
                         }
                     }
 
                     if (playerState.currentSong != null) {
-                        PlayerBar(playerState)
+                        PlayerBar(playerState, syncClient)
                     }
                 }
             }
         }
     }
 }
+
 
 // ============================================================
 // Hover helper
@@ -340,21 +366,33 @@ fun YTItemCard(item: YTItem, playerState: PlayerState, contextSongs: List<SongIt
             Box(
                 modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(
                     if (item is ArtistItem) CircleShape else RoundedCornerShape(8.dp)
-                ).background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                ),
                 contentAlignment = Alignment.Center,
             ) {
-                // Icon placeholder based on item type
-                Icon(
-                    when (item) {
-                        is SongItem -> Icons.Rounded.MusicNote
-                        is AlbumItem -> Icons.Rounded.Album
-                        is ArtistItem -> Icons.Rounded.Person
-                        is PlaylistItem -> Icons.Rounded.QueueMusic
-                        else -> Icons.Rounded.MusicNote
+                AsyncImage(
+                    url = thumbnailUrl,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    placeholder = {
+                        Box(
+                            Modifier.fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                when (item) {
+                                    is SongItem -> Icons.Rounded.MusicNote
+                                    is AlbumItem -> Icons.Rounded.Album
+                                    is ArtistItem -> Icons.Rounded.Person
+                                    is PlaylistItem -> Icons.Rounded.QueueMusic
+                                    else -> Icons.Rounded.MusicNote
+                                },
+                                item.title,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.size(40.dp),
+                            )
+                        }
                     },
-                    item.title,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    modifier = Modifier.size(40.dp),
                 )
                 // Play button overlay
                 if (hovered && item is SongItem) {
@@ -520,19 +558,32 @@ fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<S
         ) {
             // Thumbnail
             Box(
-                Modifier.size(48.dp).clip(RoundedCornerShape(if (item is ArtistItem) 24.dp else 4.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                Modifier.size(48.dp).clip(RoundedCornerShape(if (item is ArtistItem) 24.dp else 4.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    when (item) {
-                        is SongItem -> Icons.Rounded.MusicNote
-                        is AlbumItem -> Icons.Rounded.Album
-                        is ArtistItem -> Icons.Rounded.Person
-                        is PlaylistItem -> Icons.Rounded.QueueMusic
-                        else -> Icons.Rounded.MusicNote
+                AsyncImage(
+                    url = item.thumbnail,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    placeholder = {
+                        Box(
+                            Modifier.fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                when (item) {
+                                    is SongItem -> Icons.Rounded.MusicNote
+                                    is AlbumItem -> Icons.Rounded.Album
+                                    is ArtistItem -> Icons.Rounded.Person
+                                    is PlaylistItem -> Icons.Rounded.QueueMusic
+                                    else -> Icons.Rounded.MusicNote
+                                },
+                                null, tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
                     },
-                    null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp),
                 )
             }
             Spacer(Modifier.width(12.dp))
@@ -658,6 +709,7 @@ fun SettingsScreen(
     viewModel: DesktopViewModel,
     pureBlack: Boolean, onPureBlackChanged: (Boolean) -> Unit,
     themeColor: Color, onThemeColorChanged: (Color) -> Unit,
+    syncClient: DesktopSyncClient,
 ) {
     var cookieInput by remember { mutableStateOf("") }
     var showCookieDialog by remember { mutableStateOf(false) }
@@ -732,25 +784,57 @@ fun SettingsScreen(
             }
         }
 
-        // Sync
+        // Sync — real connection status driven by syncClient
         SettingsSection("Sync & Remote", Icons.Rounded.Devices) {
-            var syncEnabled by remember { mutableStateOf(true) }
+            val isSyncConnected by remember { derivedStateOf { syncClient.connected } }
+            var syncEnabled by remember { mutableStateOf(viewModel.isLoggedIn) }
             ListItem(
                 headlineContent = { Text("Cross-device sync") },
-                supportingContent = { Text("Control playback from other devices") },
-                trailingContent = { Switch(checked = syncEnabled, onCheckedChange = { syncEnabled = it }) }
+                supportingContent = { Text("Control playback from mobile/other devices") },
+                trailingContent = {
+                    Switch(
+                        checked = syncEnabled,
+                        onCheckedChange = { enabled ->
+                            syncEnabled = enabled
+                            val email = viewModel.accountEmail
+                            if (enabled && email != null) syncClient.connect(email)
+                            else syncClient.disconnect()
+                        }
+                    )
+                }
             )
             HorizontalDivider(Modifier.padding(horizontal = 16.dp))
             ListItem(
                 headlineContent = { Text("Relay server") },
                 supportingContent = { Text("metrolistsyncrelay-ooae5v0w.b4a.run") },
                 trailingContent = {
-                    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                        Text("Connected", Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    val (bgColor, label) = if (isSyncConnected)
+                        MaterialTheme.colorScheme.primaryContainer to "Connected"
+                    else
+                        MaterialTheme.colorScheme.errorContainer to "Disconnected"
+                    Surface(shape = RoundedCornerShape(12.dp), color = bgColor) {
+                        Text(
+                            label,
+                            Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isSyncConnected)
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            else
+                                MaterialTheme.colorScheme.onErrorContainer,
+                        )
                     }
                 }
             )
+            if (!viewModel.isLoggedIn) {
+                ListItem(
+                    headlineContent = { Text("Sign in required", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    supportingContent = { Text("Remote sync requires a signed-in Google account",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)) },
+                    leadingContent = { Icon(Icons.Rounded.Info, null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.size(18.dp)) },
+                )
+            }
         }
 
         // About
@@ -822,7 +906,7 @@ fun SettingsSection(title: String, icon: ImageVector, content: @Composable Colum
 // ============================================================
 
 @Composable
-fun PlayerBar(playerState: PlayerState) {
+fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient) {
     val song = playerState.currentSong ?: return
 
     Surface(
@@ -847,17 +931,31 @@ fun PlayerBar(playerState: PlayerState) {
             ) {
                 // Song info
                 Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                    Surface(Modifier.size(48.dp), shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            if (playerState.isLoadingStream) {
-                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer)
-                            } else {
-                                Icon(Icons.Rounded.MusicNote, "art",
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(24.dp))
-                            }
-                        }
+                    Box(
+                        Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        AsyncImage(
+                            url = song.albumArt,
+                            contentDescription = song.title,
+                            modifier = Modifier.fillMaxSize(),
+                            placeholder = {
+                                Box(
+                                    Modifier.fillMaxSize()
+                                        .background(MaterialTheme.colorScheme.primaryContainer),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    if (playerState.isLoadingStream) {
+                                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                    } else {
+                                        Icon(Icons.Rounded.MusicNote, "art",
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(24.dp))
+                                    }
+                                }
+                            },
+                        )
                     }
                     Spacer(Modifier.width(12.dp))
                     Column {
