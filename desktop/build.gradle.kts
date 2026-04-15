@@ -33,7 +33,7 @@ compose.desktop {
         mainClass = "com.metrolist.desktop.MainKt"
 
         nativeDistributions {
-            targetFormats(TargetFormat.Deb, TargetFormat.Msi, TargetFormat.Dmg)
+            targetFormats(TargetFormat.Deb, TargetFormat.Exe, TargetFormat.Dmg)
             packageName = "Metrolist"
             packageVersion = "1.0.0"
             description = "Metrolist Desktop - YouTube Music Client"
