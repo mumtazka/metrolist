@@ -6,7 +6,9 @@
 package com.metrolist.desktop
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.lazy.grid.*
@@ -14,6 +16,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.automirrored.rounded.Login
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,13 +31,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.metrolist.desktop.auth.DesktopPreferences
+import com.metrolist.desktop.player.LyricLine
 import com.metrolist.desktop.player.PlayerState
 import com.metrolist.desktop.ui.theme.*
 import com.metrolist.desktop.viewmodel.DesktopViewModel
@@ -42,33 +49,42 @@ import com.metrolist.innertube.pages.HomePage
 import kotlinx.coroutines.delay
 import com.metrolist.desktop.sync.DesktopSyncClient
 import com.metrolist.desktop.ui.AsyncImage
+import com.metrolist.desktop.ui.LeftSidebarPanel
+import com.metrolist.desktop.ui.NavScreen
+import com.metrolist.desktop.ui.NowPlayingPanel
+import com.metrolist.desktop.ui.TopBar
 import java.awt.Desktop as AwtDesktop
+import java.awt.Dimension
 import java.net.URI
 
 // ============================================================
 // Navigation
 // ============================================================
 
-enum class Screen(val label: String, val icon: ImageVector, val activeIcon: ImageVector) {
-    HOME("Home", Icons.Rounded.Home, Icons.Rounded.Home),
-    SEARCH("Explore", Icons.Rounded.Explore, Icons.Rounded.Explore),
-    LIBRARY("Library", Icons.Rounded.LibraryMusic, Icons.Rounded.LibraryMusic),
-    LIKED("Liked Songs", Icons.Rounded.Favorite, Icons.Rounded.Favorite),
-    SETTINGS("Settings", Icons.Rounded.Settings, Icons.Rounded.Settings),
-}
+// Navigation is handled by NavScreen in DesktopPanels.kt
+// Kept as typealiases for compatibility with existing screen composables
+typealias Screen = NavScreen
 
 // ============================================================
 // Entry Point
 // ============================================================
 
 fun main() = application {
-    val windowState = rememberWindowState(width = 1280.dp, height = 820.dp)
+    // Start maximized — works properly on tiling WMs like Hyprland
+    val windowState = rememberWindowState(
+        placement = WindowPlacement.Maximized,
+    )
 
     Window(
         onCloseRequest = ::exitApplication,
         title = "Metrolist",
         state = windowState,
     ) {
+        // Set minimum window size for proper Hyprland/tiling WM behavior
+        LaunchedEffect(Unit) {
+            window.minimumSize = Dimension(900, 600)
+        }
+
         val scope = rememberCoroutineScope()
         val viewModel = remember { DesktopViewModel(scope) }
         val playerState = remember { PlayerState() }
@@ -78,8 +94,14 @@ fun main() = application {
         ) }
         var currentScreen by remember { mutableStateOf(Screen.HOME) }
         var searchQuery by remember { mutableStateOf("") }
-        var pureBlack by remember { mutableStateOf(true) }
-        var themeColor by remember { mutableStateOf(DefaultThemeColor) }
+
+        // Load persisted settings from disk
+        val savedConfig = remember { DesktopPreferences.load() }
+        var pureBlack by remember { mutableStateOf(savedConfig.pureBlack) }
+        var themeColor by remember {
+            val savedArgb = savedConfig.themeColorArgb
+            mutableStateOf(if (savedArgb != null) Color(savedArgb) else DefaultThemeColor)
+        }
 
         // Load home on first launch
         LaunchedEffect(Unit) {
@@ -104,39 +126,139 @@ fun main() = application {
             }
         }
 
+        // Persist settings when they change
+        LaunchedEffect(pureBlack, themeColor) {
+            val argb = ((themeColor.alpha * 255).toInt() shl 24) or
+                       ((themeColor.red * 255).toInt() shl 16) or
+                       ((themeColor.green * 255).toInt() shl 8) or
+                       (themeColor.blue * 255).toInt()
+            val config = DesktopPreferences.load().copy(
+                pureBlack = pureBlack,
+                themeColorArgb = argb,
+            )
+            DesktopPreferences.save(config)
+        }
+
+        // Auto-load artist info when the playing song changes
+        // We look for an ArtistItem in the search results to get a browseId
+        LaunchedEffect(playerState.currentSong?.id) {
+            val song = playerState.currentSong
+            if (song == null) {
+                viewModel.clearArtist()
+                return@LaunchedEffect
+            }
+            // Try to find an artist browseId from home sections first
+            val artistId = viewModel.homeSections
+                .flatMap { it.items }
+                .filterIsInstance<ArtistItem>()
+                .firstOrNull { it.title.equals(song.artist, ignoreCase = true) }?.id
+            if (artistId != null) {
+                viewModel.loadArtist(artistId)
+            } else {
+                // Search for the artist to get a proper browseId
+                val query = song.artist.trim()
+                if (query.isNotBlank()) {
+                    viewModel.clearArtist()
+                    delay(300)
+                    viewModel.searchArtistForPanel(query)
+                }
+            }
+        }
+
         MetrolistTheme(pureBlack = pureBlack, themeColor = themeColor) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 color = MaterialTheme.colorScheme.background,
             ) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    Row(modifier = Modifier.weight(1f)) {
-                        Sidebar(currentScreen, { currentScreen = it }, viewModel)
-                        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val totalWidth = maxWidth
+                    // Responsive breakpoints
+                    val showLeftSidebar  = totalWidth >= 600.dp
+                    val showRightPanel   = totalWidth >= 1100.dp && (playerState.currentSong != null || playerState.showQueue)
+                    val leftWidth        = 260.dp
+                    val rightWidth       = 280.dp
 
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .background(MaterialTheme.colorScheme.background)
-                        ) {
-                            when (currentScreen) {
-                                Screen.HOME -> HomeScreen(viewModel, playerState)
-                                Screen.SEARCH -> SearchScreen(viewModel, searchQuery, { searchQuery = it }, playerState)
-                                Screen.LIBRARY -> LibraryScreen(viewModel, playerState)
-                                Screen.LIKED -> LikedSongsScreen(viewModel, playerState)
-                                Screen.SETTINGS -> SettingsScreen(
-                                    viewModel,
-                                    pureBlack, { pureBlack = it },
-                                    themeColor, { themeColor = it },
-                                    syncClient,
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Row(modifier = Modifier.weight(1f)) {
+
+                            // ── Left sidebar ──
+                            AnimatedVisibility(
+                                visible = showLeftSidebar,
+                                enter = slideInHorizontally() + fadeIn(),
+                                exit  = slideOutHorizontally() + fadeOut(),
+                            ) {
+                                LeftSidebarPanel(
+                                    currentScreen = currentScreen,
+                                    onNavigate = { currentScreen = it },
+                                    viewModel = viewModel,
+                                    modifier = Modifier.width(leftWidth),
                                 )
                             }
-                        }
-                    }
 
-                    if (playerState.currentSong != null) {
-                        PlayerBar(playerState, syncClient)
+                            if (showLeftSidebar) {
+                                VerticalDivider(
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                                )
+                            }
+
+                            // ── Main content ──
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .background(MaterialTheme.colorScheme.background),
+                            ) {
+                                TopBar(
+                                    searchQuery = searchQuery,
+                                    onQueryChange = { searchQuery = it },
+                                    onSearchFocused = { currentScreen = Screen.SEARCH },
+                                    viewModel = viewModel,
+                                )
+                                Box(modifier = Modifier.weight(1f)) {
+                                    when (currentScreen) {
+                                        Screen.HOME     -> HomeScreen(viewModel, playerState)
+                                        Screen.SEARCH   -> SearchScreen(viewModel, searchQuery, { searchQuery = it }, playerState)
+                                        Screen.LIBRARY  -> LibraryScreen(viewModel, playerState)
+                                        Screen.LIKED    -> LikedSongsScreen(viewModel, playerState)
+                                        Screen.SETTINGS -> SettingsScreen(
+                                            viewModel,
+                                            pureBlack, { pureBlack = it },
+                                            themeColor, { newColor -> themeColor = newColor },
+                                            syncClient,
+                                        )
+                                    }
+                                }
+                            }
+
+                            // ── Right now-playing panel ──
+                            AnimatedVisibility(
+                                visible = showRightPanel,
+                                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                                exit  = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+                            ) {
+                                if (showRightPanel) {
+                                    Row {
+                                        VerticalDivider(
+                                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                                        )
+                                        NowPlayingPanel(
+                                            playerState = playerState,
+                                            viewModel   = viewModel,
+                                            modifier    = Modifier.width(rightWidth),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Lyrics panel (slides up above player bar)
+                        if (playerState.showLyrics && playerState.currentSong != null) {
+                            LyricsPanel(playerState)
+                        }
+
+                        if (playerState.currentSong != null) {
+                            PlayerBar(playerState, syncClient, viewModel)
+                        }
                     }
                 }
             }
@@ -166,67 +288,7 @@ fun Modifier.hoverBackground(
 // Sidebar
 // ============================================================
 
-@Composable
-fun Sidebar(currentScreen: Screen, onNavigate: (Screen) -> Unit, viewModel: DesktopViewModel) {
-    NavigationRail(
-        modifier = Modifier.fillMaxHeight(),
-        containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-    ) {
-        Spacer(Modifier.height(12.dp))
-
-        Icon(
-            Icons.Rounded.MusicNote,
-            contentDescription = "Metrolist",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(32.dp),
-        )
-        Text(
-            "Metrolist",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
-        )
-
-        Screen.entries.take(3).forEach { screen ->
-            val selected = currentScreen == screen
-            NavigationRailItem(
-                selected = selected,
-                onClick = { onNavigate(screen) },
-                icon = { Icon(if (selected) screen.activeIcon else screen.icon, screen.label) },
-                label = { Text(screen.label, style = MaterialTheme.typography.labelSmall) },
-                colors = NavigationRailItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                ),
-            )
-        }
-
-        Spacer(Modifier.weight(1f))
-
-        NavigationRailItem(
-            selected = currentScreen == Screen.LIKED,
-            onClick = { onNavigate(Screen.LIKED) },
-            icon = {
-                Icon(Icons.Rounded.Favorite, "Liked Songs",
-                    tint = if (currentScreen == Screen.LIKED) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.error.copy(alpha = 0.7f))
-            },
-            label = { Text("Liked", style = MaterialTheme.typography.labelSmall) },
-        )
-
-        NavigationRailItem(
-            selected = currentScreen == Screen.SETTINGS,
-            onClick = { onNavigate(Screen.SETTINGS) },
-            icon = { Icon(Icons.Rounded.Settings, "Settings") },
-            label = { Text("Settings", style = MaterialTheme.typography.labelSmall) },
-        )
-
-        Spacer(Modifier.height(12.dp))
-    }
-}
+// Sidebar replaced by LeftSidebarPanel in DesktopPanels.kt
 
 // ============================================================
 // Home Screen — Real YouTube Music API
@@ -384,7 +446,7 @@ fun YTItemCard(item: YTItem, playerState: PlayerState, contextSongs: List<SongIt
                                     is SongItem -> Icons.Rounded.MusicNote
                                     is AlbumItem -> Icons.Rounded.Album
                                     is ArtistItem -> Icons.Rounded.Person
-                                    is PlaylistItem -> Icons.Rounded.QueueMusic
+                                    is PlaylistItem -> Icons.AutoMirrored.Rounded.QueueMusic
                                     else -> Icons.Rounded.MusicNote
                                 },
                                 item.title,
@@ -449,54 +511,66 @@ fun SearchScreen(viewModel: DesktopViewModel, query: String, onQueryChange: (Str
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-        OutlinedTextField(
-            value = query, onValueChange = onQueryChange,
-            placeholder = { Text("Search songs, artists, albums...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-            modifier = Modifier.fillMaxWidth(),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = Color.Transparent,
-                cursorColor = MaterialTheme.colorScheme.primary,
-            ),
-            shape = RoundedCornerShape(28.dp), singleLine = true,
-            leadingIcon = { Icon(Icons.Rounded.Search, "Search", tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-            trailingIcon = {
-                if (query.isNotBlank()) {
-                    IconButton(onClick = { onQueryChange("") }) { Icon(Icons.Rounded.Close, "Clear") }
-                }
-            },
-        )
-
-        Spacer(Modifier.height(24.dp))
+    // Search bar is now in TopBar — SearchScreen just shows results/categories
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp)) {
+        Spacer(Modifier.height(8.dp))
 
         when {
             query.isBlank() -> {
                 Text("Browse All", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
+                data class GenreData(val name: String, val color: Color, val icon: ImageVector)
                 val categories = listOf(
-                    "Pop" to Color(0xFFE91E63), "Hip-Hop" to Color(0xFFFF5722),
-                    "Rock" to Color(0xFFFF9800), "R&B" to Color(0xFF2196F3),
-                    "Electronic" to Color(0xFF00BCD4), "Jazz" to Color(0xFFFFC107),
-                    "Classical" to Color(0xFF673AB7), "Indie" to Color(0xFF4CAF50),
-                    "K-Pop" to Color(0xFFE91E63).copy(alpha = 0.8f), "Lo-Fi" to Color(0xFF607D8B),
+                    GenreData("Pop", Color(0xFFE91E63), Icons.Rounded.MusicNote),
+                    GenreData("Hip-Hop", Color(0xFFFF5722), Icons.Rounded.Mic),
+                    GenreData("Rock", Color(0xFFFF9800), Icons.Rounded.Album),
+                    GenreData("R&B", Color(0xFF2196F3), Icons.Rounded.Favorite),
+                    GenreData("Electronic", Color(0xFF00BCD4), Icons.Rounded.Equalizer),
+                    GenreData("Jazz", Color(0xFFFFC107), Icons.Rounded.Audiotrack),
+                    GenreData("Classical", Color(0xFF673AB7), Icons.Rounded.LibraryMusic),
+                    GenreData("Indie", Color(0xFF4CAF50), Icons.AutoMirrored.Rounded.QueueMusic),
+                    GenreData("K-Pop", Color(0xFFE91E63).copy(alpha = 0.85f), Icons.Rounded.Star),
+                    GenreData("Lo-Fi", Color(0xFF607D8B), Icons.Rounded.Bedtime),
                 )
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(160.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(categories) { (name, color) ->
+                    items(categories) { genre ->
                         Surface(
-                            modifier = Modifier.height(90.dp),
-                            shape = RoundedCornerShape(12.dp), color = color,
-                            onClick = { onQueryChange(name) },
+                            modifier = Modifier.height(100.dp),
+                            shape = RoundedCornerShape(12.dp), color = genre.color,
+                            onClick = { onQueryChange(genre.name) },
                         ) {
-                            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.BottomStart) {
-                                Text(name, style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold, color = Color.White)
+                            Box(
+                                Modifier.fillMaxSize()
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(
+                                                genre.color,
+                                                genre.color.copy(alpha = 0.6f),
+                                            )
+                                        )
+                                    )
+                            ) {
+                                // Genre icon (top-right, semi-transparent)
+                                Icon(
+                                    genre.icon, null,
+                                    tint = Color.White.copy(alpha = 0.25f),
+                                    modifier = Modifier
+                                        .size(64.dp)
+                                        .align(Alignment.TopEnd)
+                                        .offset(x = 8.dp, y = (-8).dp),
+                                )
+                                // Genre name
+                                Text(
+                                    genre.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
+                                )
                             }
                         }
                     }
@@ -521,16 +595,198 @@ fun SearchScreen(viewModel: DesktopViewModel, query: String, onQueryChange: (Str
             else -> {
                 Text("Results for \"$query\"", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
-                LazyColumn {
-                    val searchSongs = viewModel.searchResults.filterIsInstance<SongItem>()
-                    items(viewModel.searchResults) { item ->
-                        SearchResultRow(item, playerState, searchSongs)
+
+                val allResults = viewModel.searchResults
+                val topResult  = allResults.firstOrNull()
+                val restResults = if (allResults.size > 1) allResults.drop(1) else emptyList()
+                val searchSongs = allResults.filterIsInstance<SongItem>()
+
+                BoxWithConstraints(Modifier.fillMaxSize()) {
+                    val isWide = maxWidth >= 800.dp
+                    if (isWide) {
+                        // ── Wide layout: Top Result card left, list right ──
+                        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                            // Left: Top Result card
+                            if (topResult != null) {
+                                TopResultCard(
+                                    item = topResult,
+                                    playerState = playerState,
+                                    searchSongs = searchSongs,
+                                    modifier = Modifier.width(260.dp).fillMaxHeight(),
+                                )
+                            }
+                            // Right: remaining results
+                            LazyColumn(Modifier.weight(1f)) {
+                                items(restResults) { item ->
+                                    SearchResultRow(item, playerState, searchSongs)
+                                }
+                            }
+                        }
+                    } else {
+                        // ── Narrow layout: stacked ──
+                        LazyColumn(Modifier.fillMaxSize()) {
+                            if (topResult != null) {
+                                item {
+                                    TopResultCard(
+                                        item = topResult,
+                                        playerState = playerState,
+                                        searchSongs = searchSongs,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                    Spacer(Modifier.height(16.dp))
+                                }
+                            }
+                            items(restResults) { item ->
+                                SearchResultRow(item, playerState, searchSongs)
+                            }
+                        }
                     }
                 }
             }
         }
     }
 }
+
+// ── Top Result Card ────────────────────────────────────────────────────────
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+fun TopResultCard(
+    item: YTItem,
+    playerState: PlayerState,
+    searchSongs: List<SongItem>,
+    modifier: Modifier = Modifier,
+) {
+    var hovered by remember { mutableStateOf(false) }
+
+    val typeLabel = when (item) {
+        is SongItem   -> if (item.isVideoSong) "Video" else "Song"
+        is ArtistItem -> "Artist"
+        is AlbumItem  -> "Album"
+        is PlaylistItem -> "Playlist"
+        else          -> "Result"
+    }
+    val subtitle = when (item) {
+        is SongItem   -> item.artists.joinToString { it.name }
+        is ArtistItem -> "Artist"
+        is AlbumItem  -> item.artists?.joinToString { it.name } ?: ""
+        else          -> ""
+    }
+
+    Column(
+        modifier = modifier
+            .then(Modifier.clip(RoundedCornerShape(16.dp)))
+            .background(
+                if (hovered) MaterialTheme.colorScheme.surfaceContainerHigh
+                else MaterialTheme.colorScheme.surfaceContainerLow
+            )
+            .onPointerEvent(PointerEventType.Enter) { hovered = true }
+            .onPointerEvent(PointerEventType.Exit)  { hovered = false }
+            .clickable {
+                when (item) {
+                    is SongItem -> {
+                        val idx = searchSongs.indexOf(item).coerceAtLeast(0)
+                        val queue = searchSongs.map { s ->
+                            com.metrolist.desktop.player.PlayerSong(
+                                s.id, s.title,
+                                s.artists.joinToString { a -> a.name },
+                                s.thumbnail, (s.duration ?: 210) * 1000L,
+                            )
+                        }
+                        playerState.playQueue(queue, idx)
+                    }
+                    else -> {} // artist/album click = no-op for now
+                }
+            }
+            .padding(20.dp),
+    ) {
+        // Large thumbnail
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(if (item is ArtistItem) 999.dp else 12.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (item.thumbnail != null) {
+                AsyncImage(
+                    url = item.thumbnail,
+                    contentDescription = item.title,
+                    modifier = Modifier.fillMaxSize(),
+                    placeholder = {
+                        Icon(Icons.Rounded.MusicNote, null, Modifier.size(48.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                    },
+                )
+            } else {
+                Icon(Icons.Rounded.MusicNote, null, Modifier.size(48.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Type badge
+        Surface(
+            shape = RoundedCornerShape(4.dp),
+            color = MaterialTheme.colorScheme.secondaryContainer,
+        ) {
+            Text(
+                typeLabel,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Text(
+            item.title,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (subtitle.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        // Play button (only for songs)
+        if (item is SongItem) {
+            Spacer(Modifier.height(16.dp))
+            Button(
+                onClick = {
+                    val idx = searchSongs.indexOf(item).coerceAtLeast(0)
+                    val queue = searchSongs.map { s ->
+                        com.metrolist.desktop.player.PlayerSong(
+                            s.id, s.title,
+                            s.artists.joinToString { a -> a.name },
+                            s.thumbnail, (s.duration ?: 210) * 1000L,
+                        )
+                    }
+                    playerState.playQueue(queue, idx)
+                },
+                shape = RoundedCornerShape(50),
+                modifier = Modifier.height(40.dp),
+            ) {
+                Icon(Icons.Rounded.PlayArrow, "Play", modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Play", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
 
 @Composable
 fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<SongItem> = emptyList()) {
@@ -576,7 +832,7 @@ fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<S
                                     is SongItem -> Icons.Rounded.MusicNote
                                     is AlbumItem -> Icons.Rounded.Album
                                     is ArtistItem -> Icons.Rounded.Person
-                                    is PlaylistItem -> Icons.Rounded.QueueMusic
+                                    is PlaylistItem -> Icons.AutoMirrored.Rounded.QueueMusic
                                     else -> Icons.Rounded.MusicNote
                                 },
                                 null, tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -640,7 +896,7 @@ fun LibraryScreen(viewModel: DesktopViewModel, playerState: PlayerState) {
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = { openGoogleLogin() },
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) {
-                        Icon(Icons.Rounded.Login, "Login", Modifier.size(18.dp))
+                        Icon(Icons.AutoMirrored.Rounded.Login, "Login", Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Sign in with Google")
                     }
@@ -737,7 +993,7 @@ fun SettingsScreen(
                 )
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { openGoogleLogin() }) {
-                        Icon(Icons.Rounded.Login, null, Modifier.size(18.dp))
+                        Icon(Icons.AutoMirrored.Rounded.Login, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("Sign in via browser")
                     }
@@ -906,7 +1162,7 @@ fun SettingsSection(title: String, icon: ImageVector, content: @Composable Colum
 // ============================================================
 
 @Composable
-fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient) {
+fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel: DesktopViewModel) {
     val song = playerState.currentSong ?: return
 
     Surface(
@@ -971,9 +1227,21 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient) {
                             else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                     }
                     Spacer(Modifier.width(8.dp))
-                    IconButton(onClick = {}, modifier = Modifier.size(36.dp)) {
-                        Icon(Icons.Rounded.FavoriteBorder, "Like",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    val isLiked = playerState.currentSong?.let { viewModel.isLiked(it.id) } == true
+                    IconButton(
+                        onClick = {
+                            val currentSong = playerState.currentSong
+                            if (currentSong != null) viewModel.toggleLike(currentSong.id)
+                        },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            "Like",
+                            tint = if (isLiked) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
                 }
 
@@ -1015,7 +1283,7 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient) {
                     Text("${playerState.currentTimeFormatted} / ${playerState.durationFormatted}",
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(12.dp))
-                    Icon(Icons.Rounded.VolumeUp, "Volume",
+                    Icon(Icons.AutoMirrored.Rounded.VolumeUp, "Volume",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                     Slider(
                         value = playerState.volume, onValueChange = { playerState.volume = it },
@@ -1025,13 +1293,198 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient) {
                             activeTrackColor = MaterialTheme.colorScheme.onSurface,
                             inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest),
                     )
-                    IconButton(onClick = {}, Modifier.size(36.dp)) {
-                        Icon(Icons.AutoMirrored.Rounded.QueueMusic, "Queue",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    // Lyrics toggle button
+                    IconButton(
+                        onClick = { playerState.showLyrics = !playerState.showLyrics },
+                        Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.QueueMusic, "Lyrics",
+                            tint = if (playerState.showLyrics) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    // Queue toggle button
+                    IconButton(
+                        onClick = { playerState.showQueue = !playerState.showQueue },
+                        Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.QueueMusic, "Queue",
+                            tint = if (playerState.showQueue) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
                     IconButton(onClick = {}, Modifier.size(36.dp)) {
                         Icon(Icons.Rounded.Devices, "Devices",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// Lyrics Panel
+// ============================================================
+
+@Composable
+fun LyricsPanel(playerState: PlayerState) {
+    val lyrics = playerState.lyrics
+    val currentIndex = playerState.currentLyricIndex
+    val listState = rememberLazyListState()
+
+    // Resizable height state (default 360dp, clamped 200..600dp)
+    var panelHeightDp by remember { mutableStateOf(360f) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+
+    // Auto-scroll to current lyric smoothly
+    LaunchedEffect(currentIndex) {
+        if (currentIndex >= 0 && currentIndex < lyrics.size) {
+            listState.animateScrollToItem(
+                index = currentIndex.coerceAtLeast(0),
+                scrollOffset = -120,
+            )
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(panelHeightDp.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        tonalElevation = 1.dp,
+    ) {
+        Column {
+            // ── Drag-to-resize handle ──
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(20.dp)
+                    .draggable(
+                        orientation = Orientation.Vertical,
+                        state = rememberDraggableState { delta ->
+                            // Dragging up (negative delta) = bigger panel
+                            val deltaDp = with(density) { (-delta).toDp().value }
+                            panelHeightDp = (panelHeightDp + deltaDp).coerceIn(200f, 600f)
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                // Visual handle pill
+                Box(
+                    Modifier
+                        .width(40.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
+                )
+            }
+
+            // ── Header ──
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Rounded.QueueMusic, "Lyrics",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Lyrics",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.weight(1f))
+                // Height indicator
+                Text(
+                    "${panelHeightDp.toInt()}dp",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                )
+                Spacer(Modifier.width(8.dp))
+                IconButton(
+                    onClick = { playerState.showLyrics = false },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        Icons.Rounded.KeyboardArrowDown, "Close",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
+
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+            )
+
+            when {
+                playerState.lyricsLoading -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    }
+                }
+                lyrics.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Rounded.MusicNote, "No lyrics",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                modifier = Modifier.size(32.dp),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "No lyrics available",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            )
+                        }
+                    }
+                }
+                else -> {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 32.dp, vertical = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        itemsIndexed(lyrics) { index, line ->
+                            val isCurrent = index == currentIndex
+                            val isPast = currentIndex >= 0 && index < currentIndex
+                            val isSynced = line.timeMs >= 0
+
+                            // Animated color for smooth transitions
+                            val textColor by animateColorAsState(
+                                targetValue = when {
+                                    isCurrent -> MaterialTheme.colorScheme.primary
+                                    isPast && isSynced -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                                },
+                                animationSpec = tween(durationMillis = 400),
+                                label = "lyricColor_$index",
+                            )
+
+                            Text(
+                                text = line.text.ifBlank { "♪" },
+                                style = if (isCurrent) MaterialTheme.typography.headlineSmall
+                                    else MaterialTheme.typography.titleMedium,
+                                fontWeight = if (isCurrent) FontWeight.ExtraBold else FontWeight.Normal,
+                                color = textColor,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = if (isCurrent) 8.dp else 4.dp)
+                                    .clickable {
+                                        if (line.timeMs >= 0) playerState.seekTo(line.timeMs)
+                                    },
+                            )
+                        }
                     }
                 }
             }

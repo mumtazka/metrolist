@@ -1,7 +1,7 @@
 /**
  * Metrolist Desktop — Player State Manager
  * Manages playback state, resolves stream URLs via YouTube API,
- * and plays audio through mpv.
+ * plays audio through mpv, and fetches lyrics.
  */
 
 package com.metrolist.desktop.player
@@ -12,8 +12,6 @@ import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.innertube.models.YouTubeClient
 import kotlinx.coroutines.*
-import java.net.HttpURLConnection
-import java.net.URL
 
 data class PlayerSong(
     val id: String,
@@ -43,6 +41,14 @@ class PlayerState {
     var repeatMode by mutableStateOf(RepeatMode.OFF)
     var streamError by mutableStateOf<String?>(null)
     var isLoadingStream by mutableStateOf(false)
+
+    // Lyrics
+    var lyrics by mutableStateOf<List<LyricLine>>(emptyList())
+    var currentLyricIndex by mutableStateOf(-1)
+    var showLyrics by mutableStateOf(false)
+    var showQueue by mutableStateOf(false)
+    var lyricsLoading by mutableStateOf(false)
+    private var lyricsJob: Job? = null
 
     private var positionJob: Job? = null
     private var resolveJob: Job? = null
@@ -103,8 +109,9 @@ class PlayerState {
     }
 
     fun playSong(song: PlayerSong) {
-        // Cancel any previous resolve job
+        // Cancel any previous resolve/lyrics jobs
         resolveJob?.cancel()
+        lyricsJob?.cancel()
 
         currentSong = song
         duration = song.durationMs
@@ -112,10 +119,26 @@ class PlayerState {
         isPlaying = false
         streamError = null
         isLoadingStream = true
+        lyrics = emptyList()
+        currentLyricIndex = -1
 
         // Resolve stream URL and play via mpv
         resolveJob = scope.launch(Dispatchers.IO) {
             resolveAndPlay(song.id)
+        }
+
+        // Fetch lyrics in parallel (don't block playback)
+        lyricsJob = scope.launch(Dispatchers.IO) {
+            lyricsLoading = true
+            val durationSec = (song.durationMs / 1000).toInt()
+            val result = LyricsProvider.fetchLyrics(song.title, song.artist, durationSec)
+            if (result != null) {
+                lyrics = result
+                println("[Lyrics] Loaded ${result.size} lines for '${song.title}'")
+            } else {
+                println("[Lyrics] No lyrics found for '${song.title}'")
+            }
+            lyricsLoading = false
         }
     }
 
@@ -221,13 +244,10 @@ class PlayerState {
                     continue
                 }
 
-                // Validate the URL with an HTTP HEAD request before passing to mpv
-                if (!validateStreamUrl(streamUrl, client)) {
-                    println("[Player]   Stream URL validation failed (likely 403)")
-                    continue
-                }
-
-                println("[Player]   ✓ Stream validated! Playing with client=$usedClientName")
+                // Skip HEAD validation — mpv handles retries and the validation
+                // adds 2-5 seconds of latency. If the URL fails, mpv will report it
+                // and onTrackEnd will fire, letting us try the next approach.
+                println("[Player]   ✓ Stream found! Playing with client=$usedClientName")
 
                 // Update duration from API response
                 response.videoDetails?.lengthSeconds?.toLongOrNull()?.let {
@@ -254,43 +274,6 @@ class PlayerState {
         isLoadingStream = false
         streamError = "Could not get audio stream"
         isPlaying = false
-    }
-
-
-    /**
-     * Validate a stream URL via HTTP HEAD request.
-     * Returns true if the server responds with 2xx.
-     */
-    private fun validateStreamUrl(url: String, client: YouTubeClient): Boolean {
-        return try {
-            val connection = URL(url).openConnection() as HttpURLConnection
-            connection.requestMethod = "HEAD"
-            connection.connectTimeout = 5000
-            connection.readTimeout = 5000
-
-            // Match the User-Agent that mpv will use
-            val userAgent = when {
-                client.clientName.contains("ANDROID") || client.clientName.contains("VR") ->
-                    "com.google.android.youtube/21.03.38 (Linux; U; Android 14) gzip"
-                client.clientName.contains("IOS") || client.clientName.contains("IPAD") ->
-                    "com.google.ios.youtube/21.03.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X;)"
-                else -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"
-            }
-            connection.setRequestProperty("User-Agent", userAgent)
-
-            if (client.clientName.contains("WEB")) {
-                connection.setRequestProperty("Referer", "https://music.youtube.com/")
-                connection.setRequestProperty("Origin", "https://music.youtube.com")
-            }
-
-            val code = connection.responseCode
-            connection.disconnect()
-            println("[Player]   HTTP HEAD response: $code")
-            code in 200..299
-        } catch (e: Exception) {
-            println("[Player]   HTTP HEAD failed: ${e.message}")
-            false
-        }
     }
 
     fun playQueue(songs: List<PlayerSong>, startIndex: Int = 0) {
@@ -370,6 +353,35 @@ class PlayerState {
         }
     }
 
+    /** Move a queue item from [from] to [to] index and keep queueIndex tracking correct. */
+    fun reorderQueue(from: Int, to: Int) {
+        if (from == to) return
+        val list = queue.toMutableList()
+        val item = list.removeAt(from)
+        list.add(to, item)
+        queue = list
+        // Keep queueIndex pointing at the same song
+        queueIndex = when {
+            from == queueIndex -> to
+            from < queueIndex && to >= queueIndex -> queueIndex - 1
+            from > queueIndex && to <= queueIndex -> queueIndex + 1
+            else -> queueIndex
+        }
+    }
+
+    /** Remove a song at [index] from the queue. */
+    fun removeFromQueue(index: Int) {
+        if (index < 0 || index >= queue.size) return
+        val list = queue.toMutableList()
+        list.removeAt(index)
+        queue = list
+        when {
+            index < queueIndex -> queueIndex = (queueIndex - 1).coerceAtLeast(0)
+            index == queueIndex && list.isNotEmpty() -> playSong(list[queueIndex.coerceAtMost(list.size - 1)])
+            else -> {}
+        }
+    }
+
     val progressFraction: Float
         get() = if (duration > 0) (currentPosition.toFloat() / duration) else 0f
 
@@ -386,7 +398,23 @@ class PlayerState {
                 delay(250)
                 if (isPlaying && mpv.isRunning && currentPosition < duration) {
                     currentPosition += 250
+                    // Update current lyric line based on position
+                    updateCurrentLyric()
                 }
+            }
+        }
+    }
+
+    /** Find the lyric line matching current playback position */
+    private fun updateCurrentLyric() {
+        if (lyrics.isEmpty()) return
+        // For synced lyrics (timeMs >= 0), find the latest line that started
+        val synced = lyrics.any { it.timeMs >= 0 }
+        if (synced) {
+            val pos = currentPosition
+            val idx = lyrics.indexOfLast { it.timeMs in 0..pos }
+            if (idx != currentLyricIndex) {
+                currentLyricIndex = idx
             }
         }
     }
@@ -398,6 +426,7 @@ class PlayerState {
 
     fun cleanup() {
         resolveJob?.cancel()
+        lyricsJob?.cancel()
         mpv.stop()
         scope.cancel()
     }

@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.compose.multiplatform)
     alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 kotlin {
@@ -23,6 +24,8 @@ kotlin {
                 implementation(libs.ktor.client.websockets)
                 implementation(libs.kotlinx.serialization.json)
                 implementation("com.materialkolor:material-kolor:2.0.0")
+                implementation(libs.ktor.client.content.negotiation)
+                implementation(libs.ktor.serialization.json)
             }
         }
     }
