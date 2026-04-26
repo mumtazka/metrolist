@@ -1,6 +1,12 @@
 /**
  * Metrolist Desktop — mpv Audio Player
- * Plays YouTube Music streams via mpv subprocess
+ * Plays YouTube Music streams via mpv subprocess.
+ *
+ * Key improvements:
+ *  - Fast-start flags: mpv begins playback with minimal buffering
+ *  - Real position: parsed from mpv stdout A: lines (no fake timer)
+ *  - onPlaybackStarted: fires when mpv first reports a position (audio is actually playing)
+ *  - onPositionUpdate: delivers real position in ms from mpv to PlayerState
  */
 
 package com.metrolist.desktop.player
@@ -10,43 +16,41 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 
-/**
- * Controls mpv for audio playback.
- * Uses IPC socket for pause/seek/volume commands.
- */
 class MpvAudioPlayer {
     private var mpvProcess: Process? = null
     private var ipcSocket: String = ""
+
     var onTrackEnd: ((success: Boolean) -> Unit)? = null
 
-    /** When true, suppress onTrackEnd callbacks (we are deliberately killing the process). */
-    @Volatile
-    private var isStopping = false
+    /** Fired once when mpv reports the first real position (audio actually started). */
+    var onPlaybackStarted: (() -> Unit)? = null
+
+    /** Fired ~4x/sec with real playback position in milliseconds. */
+    var onPositionUpdate: ((Long) -> Unit)? = null
+
+    @Volatile private var isStopping = false
+    @Volatile private var playbackStartedFired = false
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    /**
-     * Play an audio URL via mpv.
-     * Kills any existing mpv process first.
-     */
+    // Matches our custom status line: "POS:123.456"
+    private val positionRegex = Regex("""POS:(\d+\.?\d*)""")
+
     fun play(url: String, clientName: String = "WEB_REMIX") {
         stop()
-        isStopping = false  // Reset after stop
+        isStopping = false
+        playbackStartedFired = false
 
         val isWindows = System.getProperty("os.name").lowercase().contains("win")
         val isMac = System.getProperty("os.name").lowercase().contains("mac")
 
         val socketName = "metrolist-mpv-${System.currentTimeMillis()}"
-        ipcSocket = if (isWindows) {
-            """\\.\pipe\$socketName"""
-        } else if (isMac) {
-            "/tmp/$socketName"
-        } else {
-            val tmpDir = System.getProperty("java.io.tmpdir")
-            "$tmpDir/$socketName"
+        ipcSocket = when {
+            isWindows -> """\\.\\pipe\\$socketName"""
+            isMac     -> "/tmp/$socketName"
+            else      -> "${System.getProperty("java.io.tmpdir")}/$socketName"
         }
 
-        // YouTube CDN validates User-Agent matches the client that requested the stream
         val userAgent = when {
             clientName.contains("ANDROID") || clientName.contains("VR") ->
                 "com.google.android.youtube/21.03.38 (Linux; U; Android 14) gzip"
@@ -68,6 +72,19 @@ class MpvAudioPlayer {
             "--input-ipc-server=$ipcSocket",
             "--volume=70",
             "--http-header-fields=${headers.joinToString(",")}",
+
+            // ── Fast-start: begin playing after minimal buffering ──
+            "--cache=yes",
+            "--cache-pause=no",            // never pause to fill cache — just play
+            "--demuxer-max-bytes=10MiB",   // max 10 MB in the demuxer buffer
+            "--demuxer-readahead-secs=5",  // only read 5s ahead
+            "--cache-secs=20",             // keep 20s of audio in back-buffer for seeks
+
+            // ── Millisecond-precision position output ──
+            // Outputs "POS:123.456" so we get float seconds, not HH:MM:SS
+            // Use concatenation to prevent Kotlin from processing the ${...} as interpolation
+            "--term-status-msg=POS:" + "\${=time-pos}",
+
             url
         )
 
@@ -79,13 +96,26 @@ class MpvAudioPlayer {
 
             val currentProcess = mpvProcess
 
-            // Read mpv output for debugging
+            // Read stdout — parse real position from A: lines
             scope.launch {
                 try {
                     val reader = BufferedReader(InputStreamReader(currentProcess!!.inputStream))
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
-                        println("[mpv] $line")
+                        val l = line ?: continue
+
+                        // Parse: "POS:123.456" → milliseconds
+                        val match = positionRegex.find(l)
+                        if (match != null) {
+                            val posMs = (match.groupValues[1].toDoubleOrNull() ?: 0.0) * 1000.0
+                            onPositionUpdate?.invoke(posMs.toLong())
+
+                            // Fire playback-started once on first real position report
+                            if (!playbackStartedFired) {
+                                playbackStartedFired = true
+                                onPlaybackStarted?.invoke()
+                            }
+                        }
                     }
                 } catch (_: Exception) {}
             }
@@ -94,7 +124,6 @@ class MpvAudioPlayer {
             scope.launch {
                 val exitCode = currentProcess?.waitFor() ?: -1
                 println("[mpv] Process exited with code: $exitCode")
-                // Only fire callback if this wasn't a deliberate stop
                 if (!isStopping && currentProcess == mpvProcess) {
                     val success = exitCode == 0 || exitCode == 4
                     onTrackEnd?.invoke(success)
@@ -105,56 +134,41 @@ class MpvAudioPlayer {
         }
     }
 
-    fun pause() = sendCommand("cycle", "pause")
-
-    fun resume() = sendCommand("set_property", "pause", "false")
-
+    fun pause()       = sendCommand("cycle", "pause")
+    fun resume()      = sendCommand("set_property", "pause", "false")
     fun togglePause() = sendCommand("cycle", "pause")
-
     fun seekTo(seconds: Double) = sendCommand("seek", seconds.toString(), "absolute")
-
-    fun setVolume(volume: Int) = sendCommand("set_property", "volume", volume.toString())
+    fun setVolume(volume: Int)  = sendCommand("set_property", "volume", volume.toString())
 
     fun stop() {
         isStopping = true
         try {
             mpvProcess?.destroyForcibly()
             mpvProcess = null
-            if (ipcSocket.isNotBlank()) {
-                File(ipcSocket).delete()
-            }
+            if (ipcSocket.isNotBlank()) File(ipcSocket).delete()
         } catch (_: Exception) {}
     }
 
     val isRunning: Boolean
         get() = mpvProcess?.isAlive == true
 
-    /**
-     * Send a command to mpv via IPC socket.
-     * Uses OS-native IPC protocols (Named Pipes on Win, Unix Domain Sockets on Linux/Mac)
-     */
     private fun sendCommand(vararg args: String) {
         if (ipcSocket.isBlank()) return
         scope.launch {
             try {
                 val json = """{"command": [${args.joinToString(",") { "\"$it\"" }}]}"""
                 val isWindows = System.getProperty("os.name").lowercase().contains("win")
-
                 if (isWindows) {
-                    // Windows uses Named Pipes for mpv IPC
                     val file = java.io.RandomAccessFile(ipcSocket, "rw")
                     file.writeBytes("$json\n")
                     file.close()
                 } else {
-                    // Linux and Mac use Unix Domain Sockets
                     val socketFile = File(ipcSocket)
                     if (!socketFile.exists()) return@launch
-
                     val address = java.net.UnixDomainSocketAddress.of(ipcSocket)
                     val channel = java.nio.channels.SocketChannel.open(java.net.StandardProtocolFamily.UNIX)
                     channel.connect(address)
-                    val bytes = "$json\n".toByteArray()
-                    channel.write(java.nio.ByteBuffer.wrap(bytes))
+                    channel.write(java.nio.ByteBuffer.wrap("$json\n".toByteArray()))
                     channel.close()
                 }
             } catch (e: Exception) {

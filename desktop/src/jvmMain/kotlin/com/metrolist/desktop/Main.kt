@@ -42,6 +42,7 @@ import androidx.compose.ui.window.rememberWindowState
 import com.metrolist.desktop.auth.DesktopPreferences
 import com.metrolist.desktop.player.LyricLine
 import com.metrolist.desktop.player.PlayerState
+import com.metrolist.desktop.search.SearchRanker
 import com.metrolist.desktop.ui.theme.*
 import com.metrolist.desktop.viewmodel.DesktopViewModel
 import com.metrolist.innertube.models.*
@@ -597,8 +598,8 @@ fun SearchScreen(viewModel: DesktopViewModel, query: String, onQueryChange: (Str
                 Spacer(Modifier.height(16.dp))
 
                 val allResults = viewModel.searchResults
-                val topResult  = allResults.firstOrNull()
-                val restResults = if (allResults.size > 1) allResults.drop(1) else emptyList()
+                val topResult  = SearchRanker.pickTopResult(allResults, query, viewModel.likedSongIds)
+                val restResults = allResults.filter { it !== topResult }
                 val searchSongs = allResults.filterIsInstance<SongItem>()
 
                 BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -761,33 +762,59 @@ fun TopResultCard(
             )
         }
 
-        // Play button (only for songs)
+        // Duration (songs only)
+        if (item is SongItem) {
+            item.duration?.let { dur ->
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    com.metrolist.desktop.player.PlayerState.formatTime(dur * 1000L),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                )
+            }
+        }
+
+        // Action buttons (only for songs)
         if (item is SongItem) {
             Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = {
-                    val idx = searchSongs.indexOf(item).coerceAtLeast(0)
-                    val queue = searchSongs.map { s ->
-                        com.metrolist.desktop.player.PlayerSong(
-                            s.id, s.title,
-                            s.artists.joinToString { a -> a.name },
-                            s.thumbnail, (s.duration ?: 210) * 1000L,
-                        )
-                    }
-                    playerState.playQueue(queue, idx)
-                },
-                shape = RoundedCornerShape(50),
-                modifier = Modifier.height(40.dp),
-            ) {
-                Icon(Icons.Rounded.PlayArrow, "Play", modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Play", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Play button
+                Button(
+                    onClick = {
+                        val idx = searchSongs.indexOf(item).coerceAtLeast(0)
+                        val queue = searchSongs.map { s ->
+                            com.metrolist.desktop.player.PlayerSong(
+                                s.id, s.title,
+                                s.artists.joinToString { a -> a.name },
+                                s.thumbnail, (s.duration ?: 210) * 1000L,
+                            )
+                        }
+                        playerState.playQueue(queue, idx)
+                    },
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.height(40.dp),
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, "Play", modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Play", style = MaterialTheme.typography.labelLarge)
+                }
+                // Add to queue button
+                OutlinedButton(
+                    onClick = { playerState.addToQueue(item) },
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.height(40.dp),
+                ) {
+                    Icon(Icons.Rounded.AddCircleOutline, "Add to queue", modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add to Queue", style = MaterialTheme.typography.labelLarge)
+                }
             }
         }
     }
 }
 
 
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<SongItem> = emptyList()) {
     var hovered by remember { mutableStateOf(false) }
@@ -843,6 +870,7 @@ fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<S
                 )
             }
             Spacer(Modifier.width(12.dp))
+            // Title + subtitle
             Column(Modifier.weight(1f)) {
                 Text(item.title, style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -856,17 +884,59 @@ fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<S
                 Text(subtitle, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
             }
+
+            // Duration (songs only)
+            if (item is SongItem) {
+                item.duration?.let { dur ->
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        com.metrolist.desktop.player.PlayerState.formatTime(dur * 1000L),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    )
+                }
+            }
+
+            // Hover action buttons (songs only)
             if (hovered && item is SongItem) {
-                IconButton(onClick = { 
-                    if (contextSongs.isNotEmpty()) {
-                        val queue = contextSongs.map { s -> com.metrolist.desktop.player.PlayerSong(s.id, s.title, s.artists.joinToString { a -> a.name }, s.thumbnail, (s.duration ?: 210) * 1000L) }
-                        val index = contextSongs.indexOf(item).coerceAtLeast(0)
-                        playerState.playQueue(queue, index)
-                    } else {
-                        playerState.playSongItem(item)
+                Spacer(Modifier.width(4.dp))
+                // Add to queue (with tooltip)
+                TooltipBox(
+                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                    tooltip = { PlainTooltip { Text("Add to queue") } },
+                    state = rememberTooltipState(),
+                ) {
+                    IconButton(
+                        onClick = { playerState.addToQueue(item) },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.AddCircleOutline, "Add to queue",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
-                }) {
-                    Icon(Icons.Rounded.PlayArrow, "Play")
+                }
+                // Play now (with tooltip)
+                TooltipBox(
+                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                    tooltip = { PlainTooltip { Text("Play now") } },
+                    state = rememberTooltipState(),
+                ) {
+                    IconButton(
+                        onClick = {
+                            if (contextSongs.isNotEmpty()) {
+                                val queue = contextSongs.map { s -> com.metrolist.desktop.player.PlayerSong(s.id, s.title, s.artists.joinToString { a -> a.name }, s.thumbnail, (s.duration ?: 210) * 1000L) }
+                                val index = contextSongs.indexOf(item).coerceAtLeast(0)
+                                playerState.playQueue(queue, index)
+                            } else {
+                                playerState.playSongItem(item)
+                            }
+                        },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(Icons.Rounded.PlayArrow, "Play now", modifier = Modifier.size(18.dp))
+                    }
                 }
             }
         }
@@ -1299,7 +1369,7 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
                         Modifier.size(36.dp),
                     ) {
                         Icon(
-                            Icons.AutoMirrored.Rounded.QueueMusic, "Lyrics",
+                            Icons.Rounded.MusicNote, "Lyrics",
                             tint = if (playerState.showLyrics) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
@@ -1311,7 +1381,7 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
                         Modifier.size(36.dp),
                     ) {
                         Icon(
-                            Icons.AutoMirrored.Rounded.QueueMusic, "Queue",
+                            Icons.Rounded.List, "Queue",
                             tint = if (playerState.showQueue) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
