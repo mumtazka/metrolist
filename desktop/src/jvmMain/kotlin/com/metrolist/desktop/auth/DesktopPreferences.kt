@@ -18,6 +18,9 @@ data class DesktopConfig(
     val accountEmail: String = "",
     val themeColorArgb: Int? = null,
     val pureBlack: Boolean = true,
+    val lyricsPanelHeightDp: Float = 360f,
+    val audioCacheSizeMb: Int = 100,
+    val dynamicColorFromAlbumArt: Boolean = true,
 )
 
 object DesktopPreferences {

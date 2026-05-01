@@ -52,6 +52,8 @@ enum class NavScreen(val label: String, val icon: ImageVector) {
     SEARCH("Explore", Icons.Rounded.Explore),
     LIBRARY("Library", Icons.Rounded.LibraryMusic),
     LIKED("Liked", Icons.Rounded.Favorite),
+    DOWNLOADS("Downloads", Icons.Rounded.Download),
+    CACHE("Cached", Icons.Rounded.CloudDownload),
     SETTINGS("Settings", Icons.Rounded.Settings),
 }
 
@@ -129,6 +131,27 @@ fun LeftSidebarPanel(
                 onClick = { onNavigate(NavScreen.LIKED) },
                 tintOverride = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
                     .takeIf { currentScreen != NavScreen.LIKED },
+            )
+
+            // ── Downloads ──
+            SidebarNavItem(
+                label = "Downloads",
+                icon = Icons.Rounded.Download,
+                selected = currentScreen == NavScreen.DOWNLOADS,
+                onClick = { onNavigate(NavScreen.DOWNLOADS) },
+                tintOverride = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.8f)
+                    .takeIf { currentScreen != NavScreen.DOWNLOADS },
+            )
+
+            // ── Cached ──
+            val cacheCount = com.metrolist.desktop.data.StreamCache.entries.size
+            SidebarNavItem(
+                label = "Cached${if (cacheCount > 0) " ($cacheCount)" else ""}",
+                icon = Icons.Rounded.CloudDownload,
+                selected = currentScreen == NavScreen.CACHE,
+                onClick = { onNavigate(NavScreen.CACHE) },
+                tintOverride = MaterialTheme.colorScheme.secondary.copy(alpha = 0.8f)
+                    .takeIf { currentScreen != NavScreen.CACHE },
             )
 
             // ── Playlist list ──

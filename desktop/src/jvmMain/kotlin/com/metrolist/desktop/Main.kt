@@ -10,6 +10,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.CircleShape
@@ -25,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -57,6 +60,17 @@ import com.metrolist.desktop.ui.TopBar
 import java.awt.Desktop as AwtDesktop
 import java.awt.Dimension
 import java.net.URI
+
+private const val DefaultLyricsPanelHeightDp = 360f
+private const val MinLyricsPanelHeightDp = 200f
+private const val MaxLyricsPanelHeightDp = 600f
+
+private fun normalizeLyricsPanelHeight(panelHeightDp: Float): Float =
+    if (panelHeightDp.isFinite()) {
+        panelHeightDp.coerceIn(MinLyricsPanelHeightDp, MaxLyricsPanelHeightDp)
+    } else {
+        DefaultLyricsPanelHeightDp
+    }
 
 // ============================================================
 // Navigation
@@ -103,6 +117,39 @@ fun main() = application {
             val savedArgb = savedConfig.themeColorArgb
             mutableStateOf(if (savedArgb != null) Color(savedArgb) else DefaultThemeColor)
         }
+        var lyricsPanelHeightDp by remember {
+            mutableStateOf(
+                normalizeLyricsPanelHeight(savedConfig.lyricsPanelHeightDp),
+            )
+        }
+        // Cache size: load saved value and initialize the StreamCache singleton
+        var audioCacheSize by remember {
+            val size = com.metrolist.desktop.data.CacheSize.fromMb(savedConfig.audioCacheSizeMb)
+            com.metrolist.desktop.data.StreamCache.maxCacheSize = size
+            mutableStateOf(size)
+        }
+        // Dynamic color from album art
+        var dynamicColor by remember { mutableStateOf(savedConfig.dynamicColorFromAlbumArt) }
+        // The user's manually-chosen color (preserved when dynamic color is on)
+        var manualThemeColor by remember {
+            val savedArgb = savedConfig.themeColorArgb
+            mutableStateOf(if (savedArgb != null) Color(savedArgb) else DefaultThemeColor)
+        }
+
+        fun saveDesktopConfig() {
+            val argb = ((manualThemeColor.alpha * 255).toInt() shl 24) or
+                ((manualThemeColor.red * 255).toInt() shl 16) or
+                ((manualThemeColor.green * 255).toInt() shl 8) or
+                (manualThemeColor.blue * 255).toInt()
+            val config = DesktopPreferences.load().copy(
+                pureBlack = pureBlack,
+                themeColorArgb = argb,
+                lyricsPanelHeightDp = normalizeLyricsPanelHeight(lyricsPanelHeightDp),
+                audioCacheSizeMb = (audioCacheSize.bytes / 1024 / 1024).toInt(),
+                dynamicColorFromAlbumArt = dynamicColor,
+            )
+            DesktopPreferences.save(config)
+        }
 
         // Load home on first launch
         LaunchedEffect(Unit) {
@@ -122,22 +169,38 @@ fun main() = application {
         // Clean up on close
         DisposableEffect(Unit) {
             onDispose {
+                saveDesktopConfig()
                 syncClient.disconnect()
                 playerState.cleanup()
             }
         }
 
         // Persist settings when they change
-        LaunchedEffect(pureBlack, themeColor) {
-            val argb = ((themeColor.alpha * 255).toInt() shl 24) or
-                       ((themeColor.red * 255).toInt() shl 16) or
-                       ((themeColor.green * 255).toInt() shl 8) or
-                       (themeColor.blue * 255).toInt()
-            val config = DesktopPreferences.load().copy(
-                pureBlack = pureBlack,
-                themeColorArgb = argb,
-            )
-            DesktopPreferences.save(config)
+        LaunchedEffect(pureBlack, manualThemeColor, dynamicColor) {
+            saveDesktopConfig()
+        }
+
+        // Dynamic color: extract vibrant colour from album art on each song change
+        LaunchedEffect(playerState.currentSong?.id, dynamicColor) {
+            if (!dynamicColor) {
+                themeColor = manualThemeColor
+                return@LaunchedEffect
+            }
+            val art = playerState.currentSong?.albumArt
+            if (art != null) {
+                val extracted = com.metrolist.desktop.ui.theme.ThumbnailColorExtractor
+                    .extractVibrantColor(art)
+                themeColor = extracted ?: manualThemeColor
+                println("[DynamicColor] ${playerState.currentSong?.title} → $themeColor")
+            } else {
+                themeColor = manualThemeColor
+            }
+        }
+
+        LaunchedEffect(playerState.showLyrics) {
+            if (!playerState.showLyrics) {
+                saveDesktopConfig()
+            }
         }
 
         // Auto-load artist info when the playing song changes
@@ -217,15 +280,26 @@ fun main() = application {
                                 )
                                 Box(modifier = Modifier.weight(1f)) {
                                     when (currentScreen) {
-                                        Screen.HOME     -> HomeScreen(viewModel, playerState)
-                                        Screen.SEARCH   -> SearchScreen(viewModel, searchQuery, { searchQuery = it }, playerState)
-                                        Screen.LIBRARY  -> LibraryScreen(viewModel, playerState)
-                                        Screen.LIKED    -> LikedSongsScreen(viewModel, playerState)
-                                        Screen.SETTINGS -> SettingsScreen(
+                                        Screen.HOME      -> HomeScreen(viewModel, playerState)
+                                        Screen.SEARCH    -> SearchScreen(viewModel, searchQuery, { searchQuery = it }, playerState)
+                                        Screen.LIBRARY   -> LibraryScreen(viewModel, playerState)
+                                        Screen.LIKED     -> LikedSongsScreen(viewModel, playerState)
+                                        Screen.DOWNLOADS -> DownloadsScreen(playerState)
+                                        Screen.CACHE     -> CachedScreen(playerState)
+                                        Screen.SETTINGS  -> SettingsScreen(
                                             viewModel,
                                             pureBlack, { pureBlack = it },
-                                            themeColor, { newColor -> themeColor = newColor },
+                                            manualThemeColor, { newColor ->
+                                                manualThemeColor = newColor
+                                                if (!dynamicColor) themeColor = newColor
+                                            },
                                             syncClient,
+                                            audioCacheSize, { newSize ->
+                                                audioCacheSize = newSize
+                                                com.metrolist.desktop.data.StreamCache.applyLimit(newSize)
+                                                saveDesktopConfig()
+                                            },
+                                            dynamicColor, { dynamicColor = it },
                                         )
                                     }
                                 }
@@ -254,7 +328,11 @@ fun main() = application {
 
                         // Lyrics panel (slides up above player bar)
                         if (playerState.showLyrics && playerState.currentSong != null) {
-                            LyricsPanel(playerState)
+                            LyricsPanel(
+                                playerState = playerState,
+                                panelHeightDp = lyricsPanelHeightDp,
+                                onPanelHeightChange = { lyricsPanelHeightDp = it },
+                            )
                         }
 
                         if (playerState.currentSong != null) {
@@ -650,7 +728,7 @@ fun SearchScreen(viewModel: DesktopViewModel, query: String, onQueryChange: (Str
 
 // ── Top Result Card ────────────────────────────────────────────────────────
 
-@OptIn(ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun TopResultCard(
     item: YTItem,
@@ -661,11 +739,11 @@ fun TopResultCard(
     var hovered by remember { mutableStateOf(false) }
 
     val typeLabel = when (item) {
-        is SongItem   -> if (item.isVideoSong) "Video" else "Song"
-        is ArtistItem -> "Artist"
-        is AlbumItem  -> "Album"
+        is SongItem     -> if (item.isVideoSong) "Video" else "Song"
+        is ArtistItem   -> "Artist"
+        is AlbumItem    -> "Album"
         is PlaylistItem -> "Playlist"
-        else          -> "Result"
+        else            -> "Result"
     }
     val subtitle = when (item) {
         is SongItem   -> item.artists.joinToString { it.name }
@@ -674,9 +752,24 @@ fun TopResultCard(
         else          -> ""
     }
 
+    // Download / cache state (songs only)
+    val dlState    = if (item is SongItem) com.metrolist.desktop.data.DownloadManager.downloads[item.id] else null
+    val dlProgress = if (item is SongItem) com.metrolist.desktop.data.DownloadManager.progress[item.id] ?: 0f else 0f
+    val isDownloaded = dlState == com.metrolist.desktop.data.DownloadState.DONE
+    val isDownloading = dlState == com.metrolist.desktop.data.DownloadState.DOWNLOADING ||
+                        dlState == com.metrolist.desktop.data.DownloadState.QUEUED
+    val isCached = !isDownloaded &&
+        com.metrolist.desktop.data.StreamCache.getCachedPath(item.id) != null
+
+    val borderColor by animateColorAsState(
+        if (hovered) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else Color.Transparent,
+        animationSpec = tween(200), label = "border",
+    )
+
     Column(
         modifier = modifier
             .then(Modifier.clip(RoundedCornerShape(16.dp)))
+            .border(1.dp, borderColor, RoundedCornerShape(16.dp))
             .background(
                 if (hovered) MaterialTheme.colorScheme.surfaceContainerHigh
                 else MaterialTheme.colorScheme.surfaceContainerLow
@@ -684,24 +777,21 @@ fun TopResultCard(
             .onPointerEvent(PointerEventType.Enter) { hovered = true }
             .onPointerEvent(PointerEventType.Exit)  { hovered = false }
             .clickable {
-                when (item) {
-                    is SongItem -> {
-                        val idx = searchSongs.indexOf(item).coerceAtLeast(0)
-                        val queue = searchSongs.map { s ->
-                            com.metrolist.desktop.player.PlayerSong(
-                                s.id, s.title,
-                                s.artists.joinToString { a -> a.name },
-                                s.thumbnail, (s.duration ?: 210) * 1000L,
-                            )
-                        }
-                        playerState.playQueue(queue, idx)
+                if (item is SongItem) {
+                    val idx = searchSongs.indexOf(item).coerceAtLeast(0)
+                    val queue = searchSongs.map { s ->
+                        com.metrolist.desktop.player.PlayerSong(
+                            s.id, s.title,
+                            s.artists.joinToString { a -> a.name },
+                            s.thumbnail, (s.duration ?: 210) * 1000L,
+                        )
                     }
-                    else -> {} // artist/album click = no-op for now
+                    playerState.playQueue(queue, idx)
                 }
             }
             .padding(20.dp),
     ) {
-        // Large thumbnail
+        // ── Thumbnail with hover-overlay play button ──
         Box(
             Modifier
                 .fillMaxWidth()
@@ -724,26 +814,128 @@ fun TopResultCard(
                 Icon(Icons.Rounded.MusicNote, null, Modifier.size(48.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
             }
+            // Hover overlay — use alpha animation (valid inside BoxScope)
+            if (item is SongItem) {
+                val overlayAlpha by animateFloatAsState(
+                    if (hovered) 1f else 0f, tween(150), label = "overlay"
+                )
+                Box(
+                    Modifier.fillMaxSize()
+                        .alpha(overlayAlpha)
+                        .background(Color.Black.copy(alpha = 0.38f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(52.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Rounded.PlayArrow, "Play",
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(30.dp))
+                        }
+                    }
+                }
+            }
+
+            // Downloaded / Cached badge on thumbnail corner
+            if (isDownloaded || isCached || isDownloading) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            when {
+                                isDownloaded  -> MaterialTheme.colorScheme.tertiary
+                                isDownloading -> MaterialTheme.colorScheme.secondary
+                                else          -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.8f)
+                            }
+                        )
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        when {
+                            isDownloaded -> {
+                                Icon(Icons.Rounded.DownloadDone, null, Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.onTertiary)
+                                Text("Saved", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onTertiary)
+                            }
+                            isDownloading -> {
+                                CircularProgressIndicator(
+                                    progress = { dlProgress },
+                                    modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp,
+                                    color = MaterialTheme.colorScheme.onSecondary,
+                                )
+                                Text("${(dlProgress * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSecondary)
+                            }
+                            isCached -> {
+                                Icon(Icons.Rounded.CloudDownload, null, Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.onSecondary)
+                                Text("Cached", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSecondary)
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
 
-        // Type badge
-        Surface(
-            shape = RoundedCornerShape(4.dp),
-            color = MaterialTheme.colorScheme.secondaryContainer,
+        // ── Type badge + offline indicators row ──
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(
-                typeLabel,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-            )
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+            ) {
+                Text(
+                    typeLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+            if (isDownloaded) {
+                Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.tertiaryContainer) {
+                    Row(Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Icon(Icons.Rounded.WifiOff, null, Modifier.size(10.dp),
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer)
+                        Text("Available offline", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    }
+                }
+            } else if (isCached) {
+                Surface(shape = RoundedCornerShape(4.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+                    Row(Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Icon(Icons.Rounded.CloudDone, null, Modifier.size(10.dp),
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                        Text("Cached", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer)
+                    }
+                }
+            }
         }
 
         Spacer(Modifier.height(8.dp))
 
+        // ── Title ──
         Text(
             item.title,
             style = MaterialTheme.typography.headlineSmall,
@@ -751,34 +943,61 @@ fun TopResultCard(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        if (subtitle.isNotBlank()) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
 
-        // Duration (songs only)
-        if (item is SongItem) {
-            item.duration?.let { dur ->
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    com.metrolist.desktop.player.PlayerState.formatTime(dur * 1000L),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                )
+        // ── Artist + duration row ──
+        if (subtitle.isNotBlank() || (item is SongItem && item.duration != null)) {
+            Spacer(Modifier.height(4.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (subtitle.isNotBlank()) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                }
+                if (item is SongItem) {
+                    item.duration?.let { dur ->
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        ) {
+                            Text(
+                                com.metrolist.desktop.player.PlayerState.formatTime(dur * 1000L),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                }
             }
         }
 
-        // Action buttons (only for songs)
+        // ── Download progress bar (while downloading) ──
+        if (isDownloading) {
+            Spacer(Modifier.height(10.dp))
+            LinearProgressIndicator(
+                progress = { dlProgress },
+                modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)),
+                color = MaterialTheme.colorScheme.secondary,
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            )
+        }
+
+        // ── Action buttons (songs only) ──
         if (item is SongItem) {
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Play button
+            Spacer(Modifier.height(14.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                // Play
                 Button(
                     onClick = {
                         val idx = searchSongs.indexOf(item).coerceAtLeast(0)
@@ -798,15 +1017,42 @@ fun TopResultCard(
                     Spacer(Modifier.width(6.dp))
                     Text("Play", style = MaterialTheme.typography.labelLarge)
                 }
-                // Add to queue button
+                // Add to queue
                 OutlinedButton(
                     onClick = { playerState.addToQueue(item) },
                     shape = RoundedCornerShape(50),
                     modifier = Modifier.height(40.dp),
                 ) {
-                    Icon(Icons.Rounded.AddCircleOutline, "Add to queue", modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Add to Queue", style = MaterialTheme.typography.labelLarge)
+                    Icon(Icons.Rounded.AddCircleOutline, "Add", modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Add", style = MaterialTheme.typography.labelLarge)
+                }
+                // Download / Downloaded
+                OutlinedButton(
+                    onClick = {
+                        if (dlState == null || dlState == com.metrolist.desktop.data.DownloadState.ERROR) {
+                            val song = com.metrolist.desktop.player.PlayerSong(
+                                id = item.id, title = item.title,
+                                artist = item.artists.joinToString { a -> a.name },
+                                albumArt = item.thumbnail,
+                                durationMs = (item.duration ?: 210) * 1000L,
+                            )
+                            com.metrolist.desktop.data.DownloadManager.downloadSong(song)
+                        }
+                    },
+                    shape = RoundedCornerShape(50),
+                    modifier = Modifier.height(40.dp),
+                    colors = if (isDownloaded) ButtonDefaults.outlinedButtonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
+                    ) else ButtonDefaults.outlinedButtonColors(),
+                ) {
+                    when {
+                        isDownloaded  -> Icon(Icons.Rounded.DownloadDone, null,
+                            tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(18.dp))
+                        isDownloading -> CircularProgressIndicator(
+                            progress = { dlProgress }, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else          -> Icon(Icons.Rounded.Download, "Download", modifier = Modifier.size(18.dp))
+                    }
                 }
             }
         }
@@ -915,6 +1161,54 @@ fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<S
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
                         )
+                    }
+                }
+                // Download button (with tooltip)
+                val dlState = com.metrolist.desktop.data.DownloadManager.downloads[item.id]
+                val dlProgress = com.metrolist.desktop.data.DownloadManager.progress[item.id] ?: 0f
+                TooltipBox(
+                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                    tooltip = { PlainTooltip { Text(when (dlState) {
+                        com.metrolist.desktop.data.DownloadState.DONE -> "Downloaded"
+                        com.metrolist.desktop.data.DownloadState.DOWNLOADING -> "Downloading… ${(dlProgress * 100).toInt()}%"
+                        com.metrolist.desktop.data.DownloadState.QUEUED -> "Queued"
+                        else -> "Download"
+                    }) } },
+                    state = rememberTooltipState(),
+                ) {
+                    Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+                        when (dlState) {
+                            com.metrolist.desktop.data.DownloadState.DONE -> IconButton(
+                                onClick = {},
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(Icons.Rounded.DownloadDone, "Downloaded",
+                                    tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            }
+                            com.metrolist.desktop.data.DownloadState.DOWNLOADING,
+                            com.metrolist.desktop.data.DownloadState.QUEUED -> {
+                                CircularProgressIndicator(
+                                    progress = { dlProgress },
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            }
+                            else -> IconButton(
+                                onClick = {
+                                    val song = com.metrolist.desktop.player.PlayerSong(
+                                        id = item.id, title = item.title,
+                                        artist = item.artists.joinToString { a -> a.name },
+                                        albumArt = item.thumbnail,
+                                        durationMs = (item.duration ?: 210) * 1000L,
+                                    )
+                                    com.metrolist.desktop.data.DownloadManager.downloadSong(song)
+                                },
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(Icons.Rounded.Download, "Download",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                            }
+                        }
                     }
                 }
                 // Play now (with tooltip)
@@ -1030,12 +1324,16 @@ fun LikedSongsScreen(viewModel: DesktopViewModel, playerState: PlayerState) {
 // Settings Screen
 // ============================================================
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     viewModel: DesktopViewModel,
     pureBlack: Boolean, onPureBlackChanged: (Boolean) -> Unit,
     themeColor: Color, onThemeColorChanged: (Color) -> Unit,
     syncClient: DesktopSyncClient,
+    audioCacheSize: com.metrolist.desktop.data.CacheSize,
+    onAudioCacheSizeChanged: (com.metrolist.desktop.data.CacheSize) -> Unit,
+    dynamicColor: Boolean, onDynamicColorChanged: (Boolean) -> Unit,
 ) {
     var cookieInput by remember { mutableStateOf("") }
     var showCookieDialog by remember { mutableStateOf(false) }
@@ -1076,15 +1374,47 @@ fun SettingsScreen(
 
         // Appearance
         SettingsSection("Appearance", Icons.Rounded.Palette) {
+            // Dynamic color
+            ListItem(
+                headlineContent = { Text("Dynamic color from album art") },
+                supportingContent = {
+                    Text(
+                        if (dynamicColor)
+                            "Theme adapts to the current song's artwork"
+                        else
+                            "Theme uses your chosen color below"
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        Icons.Rounded.AutoAwesome, null,
+                        tint = if (dynamicColor) MaterialTheme.colorScheme.primary
+                               else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                trailingContent = {
+                    Switch(checked = dynamicColor, onCheckedChange = onDynamicColorChanged)
+                }
+            )
+            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
             ListItem(
                 headlineContent = { Text("Pure black background") },
                 supportingContent = { Text("Use AMOLED-friendly pure black") },
                 trailingContent = { Switch(checked = pureBlack, onCheckedChange = onPureBlackChanged) }
             )
             HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-            ListItem(headlineContent = { Text("Theme color") }, supportingContent = { Text("Changes accent & dynamic colors") })
+            ListItem(
+                headlineContent = { Text("Fallback theme color") },
+                supportingContent = {
+                    Text(
+                        if (dynamicColor) "Used when no album art is available"
+                        else "Active — dynamic color is off"
+                    )
+                },
+            )
             Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    .alpha(if (dynamicColor) 0.45f else 1f),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 val colors = listOf(
@@ -1163,6 +1493,79 @@ fun SettingsScreen(
             }
         }
 
+        // Audio Cache
+        SettingsSection("Audio Cache", Icons.Rounded.Cached) {
+            val usedMb = com.metrolist.desktop.data.StreamCache.usedBytes / 1024 / 1024
+            val totalSongs = com.metrolist.desktop.data.StreamCache.entries.size
+            ListItem(
+                headlineContent = { Text("Cache size limit") },
+                supportingContent = {
+                    Text(
+                        if (audioCacheSize == com.metrolist.desktop.data.CacheSize.DISABLED)
+                            "Caching disabled — songs always stream live"
+                        else
+                            "$usedMb MB used · $totalSongs songs cached"
+                    )
+                },
+                leadingContent = {
+                    Icon(Icons.Rounded.Storage, null, tint = MaterialTheme.colorScheme.primary)
+                }
+            )
+            // Size selector chips
+            FlowRow(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                com.metrolist.desktop.data.CacheSize.entries.forEach { size ->
+                    val selected = audioCacheSize == size
+                    FilterChip(
+                        selected = selected,
+                        onClick = { onAudioCacheSizeChanged(size) },
+                        label = { Text(size.label) },
+                        leadingIcon = if (selected) {{
+                            Icon(Icons.Rounded.Check, null, Modifier.size(16.dp))
+                        }} else null,
+                    )
+                }
+            }
+            if (audioCacheSize != com.metrolist.desktop.data.CacheSize.DISABLED) {
+                // Progress bar + clear button
+                val fillFraction = com.metrolist.desktop.data.StreamCache.fillFraction
+                HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    LinearProgressIndicator(
+                        progress = { fillFraction },
+                        modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)),
+                        color = when {
+                            fillFraction > 0.9f -> MaterialTheme.colorScheme.error
+                            fillFraction > 0.7f -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.primary
+                        },
+                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    )
+                    Text(
+                        "${(fillFraction * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedButton(
+                        onClick = { com.metrolist.desktop.data.StreamCache.clearAll() },
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.height(36.dp),
+                    ) {
+                        Icon(Icons.Rounded.DeleteSweep, "Clear cache", Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Clear", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+
         // About
         SettingsSection("About", Icons.Rounded.Info) {
             ListItem(headlineContent = { Text("Version") }, supportingContent = { Text("Metrolist Desktop v1.0.0") })
@@ -1223,6 +1626,350 @@ fun SettingsSection(title: String, icon: ImageVector, content: @Composable Colum
             }
             content()
             Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+// ============================================================
+// Cached Screen
+// ============================================================
+
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun CachedScreen(playerState: PlayerState) {
+    val songs = com.metrolist.desktop.data.StreamCache.entries
+    val usedMb = com.metrolist.desktop.data.StreamCache.usedBytes / 1024 / 1024
+    val maxSize = com.metrolist.desktop.data.StreamCache.maxCacheSize
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Header
+        Box(
+            modifier = Modifier.fillMaxWidth().height(160.dp)
+                .background(
+                    Brush.verticalGradient(listOf(
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.25f),
+                        MaterialTheme.colorScheme.background,
+                    ))
+                )
+                .padding(32.dp),
+            contentAlignment = Alignment.BottomStart,
+        ) {
+            Column {
+                Icon(Icons.Rounded.CloudDownload, "Cached",
+                    tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(48.dp))
+                Spacer(Modifier.height(8.dp))
+                Text("Cached", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    "${songs.size} song${if (songs.size != 1) "s" else ""} · ${usedMb} MB used" +
+                        if (maxSize != com.metrolist.desktop.data.CacheSize.DISABLED)
+                            " of ${maxSize.label}"
+                        else " · Caching disabled",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        if (songs.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Rounded.CloudDownload, "No cache",
+                        modifier = Modifier.size(80.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
+                    Spacer(Modifier.height(16.dp))
+                    Text("Nothing cached yet", style = MaterialTheme.typography.titleMedium)
+                    Text("Songs are cached automatically as you stream them",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else {
+            // Sort newest-accessed first so recently heard songs appear at top
+            val sorted = remember(songs.toList()) {
+                songs.sortedByDescending { it.lastAccessedMs }
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                itemsIndexed(sorted) { index, entry ->
+                    var hovered by remember { mutableStateOf(false) }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (hovered) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
+                        onClick = {
+                            playerState.playSong(
+                                com.metrolist.desktop.player.PlayerSong(
+                                    id = entry.id,
+                                    title = entry.title,
+                                    artist = entry.artist,
+                                    albumArt = entry.albumArt,
+                                    durationMs = entry.durationMs,
+                                )
+                            )
+                        },
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onPointerEvent(PointerEventType.Enter) { hovered = true }
+                                .onPointerEvent(PointerEventType.Exit)  { hovered = false }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // Index
+                            Text("${index + 1}", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                modifier = Modifier.width(28.dp))
+
+                            // Thumbnail
+                            Box(
+                                Modifier.size(44.dp).clip(RoundedCornerShape(6.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (entry.albumArt != null) {
+                                    AsyncImage(url = entry.albumArt, contentDescription = entry.title,
+                                        modifier = Modifier.fillMaxSize(),
+                                        placeholder = {
+                                            Icon(Icons.Rounded.MusicNote, null, Modifier.size(22.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                        })
+                                } else {
+                                    Icon(Icons.Rounded.MusicNote, null, Modifier.size(22.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                }
+                                // Cloud badge
+                                Box(
+                                    Modifier.align(Alignment.BottomEnd).size(14.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.secondary),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(Icons.Rounded.CloudDownload, null, Modifier.size(8.dp),
+                                        tint = MaterialTheme.colorScheme.onSecondary)
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+
+                            // Title + artist
+                            Column(Modifier.weight(1f)) {
+                                Text(entry.title, style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(entry.artist, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                            }
+
+                            // File size
+                            Text("${entry.sizeBytes / 1024 / 1024} MB",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
+                            Spacer(Modifier.width(8.dp))
+
+                            // Play
+                            TooltipBox(
+                                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                                tooltip = { PlainTooltip { Text("Play cached") } },
+                                state = rememberTooltipState(),
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        playerState.playSong(
+                                            com.metrolist.desktop.player.PlayerSong(
+                                                id = entry.id, title = entry.title,
+                                                artist = entry.artist, albumArt = entry.albumArt,
+                                                durationMs = entry.durationMs,
+                                            )
+                                        )
+                                    },
+                                    modifier = Modifier.size(36.dp),
+                                ) {
+                                    Icon(Icons.Rounded.PlayArrow, "Play",
+                                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            // Remove from cache
+                            TooltipBox(
+                                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                                tooltip = { PlainTooltip { Text("Remove from cache") } },
+                                state = rememberTooltipState(),
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        try { java.io.File(entry.localPath).delete() } catch (_: Exception) {}
+                                        com.metrolist.desktop.data.StreamCache.entries.removeIf { it.id == entry.id }
+                                    },
+                                    modifier = Modifier.size(36.dp),
+                                ) {
+                                    Icon(Icons.Rounded.CloudOff, "Remove from cache",
+                                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(20.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// Downloads Screen
+// ============================================================
+
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun DownloadsScreen(playerState: PlayerState) {
+    val songs = com.metrolist.desktop.data.DownloadManager.downloadedSongs
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Header
+        Box(
+            modifier = Modifier.fillMaxWidth().height(160.dp)
+                .background(
+                    Brush.verticalGradient(listOf(
+                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.25f),
+                        MaterialTheme.colorScheme.background,
+                    ))
+                )
+                .padding(32.dp),
+            contentAlignment = Alignment.BottomStart,
+        ) {
+            Column {
+                Icon(Icons.Rounded.Download, "Downloads",
+                    tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(48.dp))
+                Spacer(Modifier.height(8.dp))
+                Text("Downloads", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+                Text("${songs.size} song${if (songs.size != 1) "s" else ""} · Plays offline",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        if (songs.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Rounded.Download, "No downloads",
+                        modifier = Modifier.size(80.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
+                    Spacer(Modifier.height(16.dp))
+                    Text("No downloads yet", style = MaterialTheme.typography.titleMedium)
+                    Text("Hover over any song and click the download icon",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                itemsIndexed(songs) { index, song ->
+                    var hovered by remember { mutableStateOf(false) }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (hovered) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
+                        onClick = {
+                            // Play from local file
+                            playerState.playSong(song.toPlayerSong())
+                        },
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onPointerEvent(PointerEventType.Enter) { hovered = true }
+                                .onPointerEvent(PointerEventType.Exit)  { hovered = false }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // Index
+                            Text("${index + 1}", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                modifier = Modifier.width(28.dp))
+
+                            // Thumbnail
+                            Box(
+                                Modifier.size(44.dp).clip(RoundedCornerShape(6.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (song.albumArt != null) {
+                                    AsyncImage(url = song.albumArt, contentDescription = song.title,
+                                        modifier = Modifier.fillMaxSize(),
+                                        placeholder = {
+                                            Icon(Icons.Rounded.MusicNote, null, Modifier.size(22.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                        })
+                                } else {
+                                    Icon(Icons.Rounded.MusicNote, null, Modifier.size(22.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                }
+                                // Offline badge
+                                Box(
+                                    Modifier.align(Alignment.BottomEnd).size(14.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.tertiary),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(Icons.Rounded.Download, null, Modifier.size(8.dp),
+                                        tint = MaterialTheme.colorScheme.onTertiary)
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+
+                            // Title + artist
+                            Column(Modifier.weight(1f)) {
+                                Text(song.title, style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(song.artist, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                            }
+
+                            // Duration
+                            Text(PlayerState.formatTime(song.durationMs),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
+                            Spacer(Modifier.width(8.dp))
+
+                            // Action buttons (always visible on this screen)
+                            // Play button
+                            TooltipBox(
+                                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                                tooltip = { PlainTooltip { Text("Play offline") } },
+                                state = rememberTooltipState(),
+                            ) {
+                                IconButton(
+                                    onClick = { playerState.playSong(song.toPlayerSong()) },
+                                    modifier = Modifier.size(36.dp),
+                                ) {
+                                    Icon(Icons.Rounded.PlayArrow, "Play",
+                                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            // Delete button
+                            TooltipBox(
+                                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                                tooltip = { PlainTooltip { Text("Delete download") } },
+                                state = rememberTooltipState(),
+                            ) {
+                                IconButton(
+                                    onClick = { com.metrolist.desktop.data.DownloadManager.deleteSong(song.id) },
+                                    modifier = Modifier.size(36.dp),
+                                ) {
+                                    Icon(Icons.Rounded.Delete, "Delete",
+                                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(20.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1363,6 +2110,32 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
                             activeTrackColor = MaterialTheme.colorScheme.onSurface,
                             inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest),
                     )
+                    // Download button for current song
+                    val currentDlState = song.let { com.metrolist.desktop.data.DownloadManager.downloads[it.id] }
+                    val currentDlProgress = song.let { com.metrolist.desktop.data.DownloadManager.progress[it.id] } ?: 0f
+                    IconButton(
+                        onClick = {
+                            if (currentDlState == null || currentDlState == com.metrolist.desktop.data.DownloadState.ERROR) {
+                                com.metrolist.desktop.data.DownloadManager.downloadSong(playerState.currentSong!!)
+                            }
+                        },
+                        Modifier.size(36.dp),
+                    ) {
+                        when (currentDlState) {
+                            com.metrolist.desktop.data.DownloadState.DONE ->
+                                Icon(Icons.Rounded.DownloadDone, "Downloaded",
+                                    tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            com.metrolist.desktop.data.DownloadState.DOWNLOADING,
+                            com.metrolist.desktop.data.DownloadState.QUEUED ->
+                                CircularProgressIndicator(
+                                    progress = { currentDlProgress },
+                                    modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
+                                )
+                            else ->
+                                Icon(Icons.Rounded.Download, "Download",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                        }
+                    }
                     // Lyrics toggle button
                     IconButton(
                         onClick = { playerState.showLyrics = !playerState.showLyrics },
@@ -1402,13 +2175,15 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
 // ============================================================
 
 @Composable
-fun LyricsPanel(playerState: PlayerState) {
+fun LyricsPanel(
+    playerState: PlayerState,
+    panelHeightDp: Float,
+    onPanelHeightChange: (Float) -> Unit,
+) {
     val lyrics = playerState.lyrics
     val currentIndex = playerState.currentLyricIndex
     val listState = rememberLazyListState()
 
-    // Resizable height state (default 360dp, clamped 200..600dp)
-    var panelHeightDp by remember { mutableStateOf(360f) }
     val density = androidx.compose.ui.platform.LocalDensity.current
 
     // Auto-scroll to current lyric smoothly
@@ -1439,7 +2214,9 @@ fun LyricsPanel(playerState: PlayerState) {
                         state = rememberDraggableState { delta ->
                             // Dragging up (negative delta) = bigger panel
                             val deltaDp = with(density) { (-delta).toDp().value }
-                            panelHeightDp = (panelHeightDp + deltaDp).coerceIn(200f, 600f)
+                            onPanelHeightChange(
+                                normalizeLyricsPanelHeight(panelHeightDp + deltaDp),
+                            )
                         },
                     ),
                 contentAlignment = Alignment.Center,

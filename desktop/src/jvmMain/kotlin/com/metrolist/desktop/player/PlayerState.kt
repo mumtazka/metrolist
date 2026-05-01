@@ -53,7 +53,7 @@ class PlayerState {
      * Compensates for audio output chain latency (Bluetooth codec, DAC, etc).
      * 0 = no compensation, positive = show lyrics earlier.
      */
-    var lyricsOffsetMs by mutableStateOf(500L)
+    var lyricsOffsetMs by mutableStateOf(350L)
     private var lyricsJob: Job? = null
 
     private var positionJob: Job? = null
@@ -73,6 +73,8 @@ class PlayerState {
         YouTubeClient.ANDROID_NO_SDK,
         YouTubeClient.IPADOS,
         YouTubeClient.WEB_REMIX,
+        YouTubeClient.ANDROID_VR_1_43_32,
+        YouTubeClient.TVHTML5_SIMPLY_EMBEDDED_PLAYER,
     )
 
     init {
@@ -137,9 +139,21 @@ class PlayerState {
         lyrics = emptyList()
         currentLyricIndex = -1
 
+        // Priority 1: permanent download (user-initiated)
+        val localPath = com.metrolist.desktop.data.DownloadManager.getLocalPath(song.id)
+            // Priority 2: stream cache (automatic LRU)
+            ?: com.metrolist.desktop.data.StreamCache.getCachedPath(song.id)
+
         // Resolve stream URL and play via mpv
         resolveJob = scope.launch(Dispatchers.IO) {
-            resolveAndPlay(song.id)
+            if (localPath != null) {
+                println("[Player] Playing from local file: $localPath")
+                mpv.play(localPath, "LOCAL")
+                mpv.setVolume((volume * 100).toInt())
+                // isPlaying / isLoadingStream set by onPlaybackStarted
+            } else {
+                resolveAndPlay(song.id)
+            }
         }
 
         // Fetch lyrics in parallel (don't block playback)
@@ -175,10 +189,18 @@ class PlayerState {
                 try {
                     println("[Player] Client ${index + 1}: ${client.clientName}")
                     val result = YouTube.player(videoId, client = client)
-                    if (result.isFailure) return@launch
+                    if (result.isFailure) {
+                        println("[Player] ${client.clientName} API failure: ${result.exceptionOrNull()?.message}")
+                        return@launch
+                    }
 
                     val response = result.getOrNull() ?: return@launch
-                    if (response.playabilityStatus.status != "OK") return@launch
+                    val pbStatus = response.playabilityStatus.status
+                    val pbReason = response.playabilityStatus.reason
+                    if (pbStatus != "OK") {
+                        println("[Player] ${client.clientName} NOT OK: status=$pbStatus reason=${pbReason ?: "(none)"}")
+                        return@launch
+                    }
 
                     // Deobfuscate cipher URLs
                     val deobfuscated = try {
@@ -187,6 +209,7 @@ class PlayerState {
 
                     val audioFormats = deobfuscated.streamingData?.adaptiveFormats
                         ?.filter { it.isAudio }
+                    println("[Player] ${client.clientName} audio formats: ${audioFormats?.size ?: 0}")
                     if (audioFormats.isNullOrEmpty()) return@launch
 
                     // Pick best direct URL
@@ -214,7 +237,7 @@ class PlayerState {
         }
 
         // Wait for first success or all failures
-        val winner = withTimeoutOrNull(12_000) {
+        val winner = withTimeoutOrNull(15_000) {
             resultChannel.receive()
         }
 
@@ -235,6 +258,19 @@ class PlayerState {
         mpv.setVolume((volume * 100).toInt())
         // isPlaying and isLoadingStream will be set by mpv.onPlaybackStarted
         // once mpv actually starts outputting audio
+
+        // Background-cache the stream so next play is instant / offline
+        currentSong?.let { song ->
+            com.metrolist.desktop.data.StreamCache.cacheInBackground(
+                videoId   = videoId,
+                title     = song.title,
+                artist    = song.artist,
+                albumArt  = song.albumArt,
+                durationMs = song.durationMs,
+                streamUrl  = winner.url,
+                clientName = winner.clientName,
+            )
+        }
     }
 
     fun playQueue(songs: List<PlayerSong>, startIndex: Int = 0) {
