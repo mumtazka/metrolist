@@ -993,11 +993,12 @@ fun TopResultCard(
         // ── Action buttons (songs only) ──
         if (item is SongItem) {
             Spacer(Modifier.height(14.dp))
+
+            // Row 1: Play + Add to Queue
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                // Play
                 Button(
                     onClick = {
                         val idx = searchSongs.indexOf(item).coerceAtLeast(0)
@@ -1011,47 +1012,64 @@ fun TopResultCard(
                         playerState.playQueue(queue, idx)
                     },
                     shape = RoundedCornerShape(50),
-                    modifier = Modifier.height(40.dp),
+                    modifier = Modifier.weight(1f).height(40.dp),
                 ) {
                     Icon(Icons.Rounded.PlayArrow, "Play", modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Play", style = MaterialTheme.typography.labelLarge)
                 }
-                // Add to queue
                 OutlinedButton(
                     onClick = { playerState.addToQueue(item) },
                     shape = RoundedCornerShape(50),
-                    modifier = Modifier.height(40.dp),
+                    modifier = Modifier.weight(1f).height(40.dp),
                 ) {
                     Icon(Icons.Rounded.AddCircleOutline, "Add", modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Add", style = MaterialTheme.typography.labelLarge)
                 }
-                // Download / Downloaded
-                OutlinedButton(
-                    onClick = {
-                        if (dlState == null || dlState == com.metrolist.desktop.data.DownloadState.ERROR) {
-                            val song = com.metrolist.desktop.player.PlayerSong(
-                                id = item.id, title = item.title,
-                                artist = item.artists.joinToString { a -> a.name },
-                                albumArt = item.thumbnail,
-                                durationMs = (item.duration ?: 210) * 1000L,
-                            )
-                            com.metrolist.desktop.data.DownloadManager.downloadSong(song)
-                        }
-                    },
-                    shape = RoundedCornerShape(50),
-                    modifier = Modifier.height(40.dp),
-                    colors = if (isDownloaded) ButtonDefaults.outlinedButtonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
-                    ) else ButtonDefaults.outlinedButtonColors(),
-                ) {
-                    when {
-                        isDownloaded  -> Icon(Icons.Rounded.DownloadDone, null,
+            }
+
+            // Row 2: Download (full width, with label)
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    if (dlState == null || dlState == com.metrolist.desktop.data.DownloadState.ERROR) {
+                        val song = com.metrolist.desktop.player.PlayerSong(
+                            id = item.id, title = item.title,
+                            artist = item.artists.joinToString { a -> a.name },
+                            albumArt = item.thumbnail,
+                            durationMs = (item.duration ?: 210) * 1000L,
+                        )
+                        com.metrolist.desktop.data.DownloadManager.downloadSong(song)
+                    }
+                },
+                shape = RoundedCornerShape(50),
+                modifier = Modifier.fillMaxWidth().height(40.dp),
+                colors = if (isDownloaded) ButtonDefaults.outlinedButtonColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f)
+                ) else ButtonDefaults.outlinedButtonColors(),
+            ) {
+                when {
+                    isDownloaded -> {
+                        Icon(Icons.Rounded.DownloadDone, null,
                             tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(18.dp))
-                        isDownloading -> CircularProgressIndicator(
-                            progress = { dlProgress }, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else          -> Icon(Icons.Rounded.Download, "Download", modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Saved to Downloads",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.tertiary)
+                    }
+                    isDownloading -> {
+                        CircularProgressIndicator(
+                            progress = { dlProgress },
+                            modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Downloading ${(dlProgress * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelLarge)
+                    }
+                    else -> {
+                        Icon(Icons.Rounded.Download, "Download", modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Download", style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }
@@ -1978,6 +1996,7 @@ fun DownloadsScreen(playerState: PlayerState) {
 // Player Bar
 // ============================================================
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel: DesktopViewModel) {
     val song = playerState.currentSong ?: return
@@ -2045,52 +2064,85 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
                     }
                     Spacer(Modifier.width(8.dp))
                     val isLiked = playerState.currentSong?.let { viewModel.isLiked(it.id) } == true
-                    IconButton(
-                        onClick = {
-                            val currentSong = playerState.currentSong
-                            if (currentSong != null) viewModel.toggleLike(currentSong.id)
-                        },
-                        modifier = Modifier.size(36.dp),
+                    TooltipBox(
+                        positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        tooltip = { PlainTooltip { Text(if (isLiked) "Unlike" else "Like") } },
+                        state = rememberTooltipState(),
                     ) {
-                        Icon(
-                            if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                            "Like",
-                            tint = if (isLiked) MaterialTheme.colorScheme.error
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp),
-                        )
+                        IconButton(
+                            onClick = {
+                                val currentSong = playerState.currentSong
+                                if (currentSong != null) viewModel.toggleLike(currentSong.id)
+                            },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Icon(
+                                if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                "Like",
+                                tint = if (isLiked) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
                 }
 
                 // Controls
                 Row(modifier = Modifier.weight(1.2f), horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { playerState.toggleShuffle() }, Modifier.size(36.dp)) {
-                        Icon(Icons.Rounded.Shuffle, "Shuffle",
-                            tint = if (playerState.isShuffled) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    // Shuffle
+                    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        { PlainTooltip { Text(if (playerState.isShuffled) "Shuffle: On" else "Shuffle: Off") } },
+                        rememberTooltipState()) {
+                        IconButton(onClick = { playerState.toggleShuffle() }, Modifier.size(36.dp)) {
+                            Icon(Icons.Rounded.Shuffle, "Shuffle",
+                                tint = if (playerState.isShuffled) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                        }
                     }
-                    IconButton(onClick = { playerState.skipPrevious() }, Modifier.size(40.dp)) {
-                        Icon(Icons.Rounded.SkipPrevious, "Previous", modifier = Modifier.size(28.dp))
+                    // Previous
+                    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        { PlainTooltip { Text("Previous") } }, rememberTooltipState()) {
+                        IconButton(onClick = { playerState.skipPrevious() }, Modifier.size(40.dp)) {
+                            Icon(Icons.Rounded.SkipPrevious, "Previous", modifier = Modifier.size(28.dp))
+                        }
                     }
-                    FilledIconButton(
-                        onClick = { playerState.togglePlayPause() }, modifier = Modifier.size(44.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary),
-                    ) {
-                        Icon(if (playerState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            "Play/Pause", modifier = Modifier.size(28.dp))
+                    // Play / Pause
+                    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        { PlainTooltip { Text(if (playerState.isPlaying) "Pause" else "Play") } },
+                        rememberTooltipState()) {
+                        FilledIconButton(
+                            onClick = { playerState.togglePlayPause() }, modifier = Modifier.size(44.dp),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary),
+                        ) {
+                            Icon(if (playerState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                "Play/Pause", modifier = Modifier.size(28.dp))
+                        }
                     }
-                    IconButton(onClick = { playerState.skipNext() }, Modifier.size(40.dp)) {
-                        Icon(Icons.Rounded.SkipNext, "Next", modifier = Modifier.size(28.dp))
+                    // Next
+                    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        { PlainTooltip { Text("Next") } }, rememberTooltipState()) {
+                        IconButton(onClick = { playerState.skipNext() }, Modifier.size(40.dp)) {
+                            Icon(Icons.Rounded.SkipNext, "Next", modifier = Modifier.size(28.dp))
+                        }
                     }
-                    IconButton(onClick = { playerState.cycleRepeat() }, Modifier.size(36.dp)) {
-                        Icon(
-                            if (playerState.repeatMode == PlayerState.RepeatMode.ONE) Icons.Rounded.RepeatOne
-                            else Icons.Rounded.Repeat, "Repeat",
-                            tint = if (playerState.repeatMode != PlayerState.RepeatMode.OFF) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    // Repeat
+                    val repeatLabel = when (playerState.repeatMode) {
+                        PlayerState.RepeatMode.OFF -> "Repeat: Off"
+                        PlayerState.RepeatMode.ALL -> "Repeat: All"
+                        PlayerState.RepeatMode.ONE -> "Repeat: One"
+                    }
+                    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        { PlainTooltip { Text(repeatLabel) } }, rememberTooltipState()) {
+                        IconButton(onClick = { playerState.cycleRepeat() }, Modifier.size(36.dp)) {
+                            Icon(
+                                if (playerState.repeatMode == PlayerState.RepeatMode.ONE) Icons.Rounded.RepeatOne
+                                else Icons.Rounded.Repeat, "Repeat",
+                                tint = if (playerState.repeatMode != PlayerState.RepeatMode.OFF) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                        }
                     }
                 }
 
@@ -2110,59 +2162,80 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
                             activeTrackColor = MaterialTheme.colorScheme.onSurface,
                             inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest),
                     )
-                    // Download button for current song
-                    val currentDlState = song.let { com.metrolist.desktop.data.DownloadManager.downloads[it.id] }
-                    val currentDlProgress = song.let { com.metrolist.desktop.data.DownloadManager.progress[it.id] } ?: 0f
-                    IconButton(
-                        onClick = {
-                            if (currentDlState == null || currentDlState == com.metrolist.desktop.data.DownloadState.ERROR) {
-                                com.metrolist.desktop.data.DownloadManager.downloadSong(playerState.currentSong!!)
+                    // Download
+                    val currentDlState = com.metrolist.desktop.data.DownloadManager.downloads[song.id]
+                    val currentDlProgress = com.metrolist.desktop.data.DownloadManager.progress[song.id] ?: 0f
+                    val dlTooltip = when (currentDlState) {
+                        com.metrolist.desktop.data.DownloadState.DONE -> "Downloaded"
+                        com.metrolist.desktop.data.DownloadState.DOWNLOADING -> "Downloading…"
+                        com.metrolist.desktop.data.DownloadState.QUEUED -> "Queued"
+                        else -> "Download"
+                    }
+                    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        { PlainTooltip { Text(dlTooltip) } }, rememberTooltipState()) {
+                        IconButton(
+                            onClick = {
+                                if (currentDlState == null || currentDlState == com.metrolist.desktop.data.DownloadState.ERROR) {
+                                    com.metrolist.desktop.data.DownloadManager.downloadSong(playerState.currentSong!!)
+                                }
+                            },
+                            Modifier.size(36.dp),
+                        ) {
+                            when (currentDlState) {
+                                com.metrolist.desktop.data.DownloadState.DONE ->
+                                    Icon(Icons.Rounded.DownloadDone, null,
+                                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                com.metrolist.desktop.data.DownloadState.DOWNLOADING,
+                                com.metrolist.desktop.data.DownloadState.QUEUED ->
+                                    CircularProgressIndicator(
+                                        progress = { currentDlProgress },
+                                        modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
+                                    )
+                                else ->
+                                    Icon(Icons.Rounded.Download, null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                             }
-                        },
-                        Modifier.size(36.dp),
-                    ) {
-                        when (currentDlState) {
-                            com.metrolist.desktop.data.DownloadState.DONE ->
-                                Icon(Icons.Rounded.DownloadDone, "Downloaded",
-                                    tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                            com.metrolist.desktop.data.DownloadState.DOWNLOADING,
-                            com.metrolist.desktop.data.DownloadState.QUEUED ->
-                                CircularProgressIndicator(
-                                    progress = { currentDlProgress },
-                                    modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
-                                )
-                            else ->
-                                Icon(Icons.Rounded.Download, "Download",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
                         }
                     }
-                    // Lyrics toggle button
-                    IconButton(
-                        onClick = { playerState.showLyrics = !playerState.showLyrics },
-                        Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            Icons.Rounded.MusicNote, "Lyrics",
-                            tint = if (playerState.showLyrics) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                    // Queue toggle button
-                    IconButton(
-                        onClick = { playerState.showQueue = !playerState.showQueue },
-                        Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            Icons.Rounded.List, "Queue",
-                            tint = if (playerState.showQueue) MaterialTheme.colorScheme.primary
+                    // Lyrics
+                    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        { PlainTooltip { Text(if (playerState.showLyrics) "Hide lyrics" else "Show lyrics") } },
+                        rememberTooltipState()) {
+                        IconButton(
+                            onClick = { playerState.showLyrics = !playerState.showLyrics },
+                            Modifier.size(36.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.MusicNote, null,
+                                tint = if (playerState.showLyrics) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp),
-                        )
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
-                    IconButton(onClick = {}, Modifier.size(36.dp)) {
-                        Icon(Icons.Rounded.Devices, "Devices",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                    // Queue
+                    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        { PlainTooltip { Text(if (playerState.showQueue) "Hide queue" else "Show queue") } },
+                        rememberTooltipState()) {
+                        IconButton(
+                            onClick = { playerState.showQueue = !playerState.showQueue },
+                            Modifier.size(36.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.List, null,
+                                tint = if (playerState.showQueue) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                    // Devices / Cast
+                    TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                        { PlainTooltip { Text("Devices") } }, rememberTooltipState()) {
+                        IconButton(onClick = {}, Modifier.size(36.dp)) {
+                            Icon(Icons.Rounded.Devices, null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                        }
                     }
                 }
             }
