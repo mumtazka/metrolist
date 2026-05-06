@@ -1,107 +1,109 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // Connect to your GitHub repository
+    // Reveal Animations using Intersection Observer
+    const observerOptions = {
+        root: null,
+        rootMargin: '0px',
+        threshold: 0.1
+    };
+
+    const observer = new IntersectionObserver((entries, observer) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.classList.add('visible');
+                // Optional: unobserve after animating
+                observer.unobserve(entry.target);
+            }
+        });
+    }, observerOptions);
+
+    document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+
+    // GitHub API logic
     const REPO = 'mumtazka/metrolist';
 
     const platforms = [
-        { id: 'windows', name: 'Windows', icon: 'ri-windows-fill', text: 'Download for Windows', match: ['.msi', 'Windows'] },
-        { id: 'mac', name: 'macOS', icon: 'ri-apple-fill', text: 'Download for macOS', match: ['.dmg', 'Mac', 'darwin'] },
-        { id: 'linux', name: 'Linux', icon: 'ri-ubuntu-fill', text: 'Download for Linux', match: ['.deb', 'Linux'] },
-        { id: 'android', name: 'Android', icon: 'ri-android-fill', text: 'Get on Android', match: ['.apk', 'Android'] },
-        { id: 'ios', name: 'iOS', icon: 'ri-apple-fill', text: 'Get on iOS', match: [] }
+        { id: 'windows', name: 'Windows', icon: 'ri-windows-fill', match: ['.exe', 'Windows'] },
+        { id: 'linux', name: 'Linux', icon: 'ri-ubuntu-fill', match: ['.deb', 'Linux'] },
+        { id: 'android', name: 'Android', icon: 'ri-android-fill', match: ['.apk', 'Android'] }
     ];
 
     function detectOS() {
         const userAgent = window.navigator.userAgent.toLowerCase();
         if (userAgent.includes('win')) return 'windows';
-        if (userAgent.includes('mac')) {
-            if (navigator.maxTouchPoints > 0) return 'ios';
-            return 'mac';
-        }
         if (userAgent.includes('linux') && !userAgent.includes('android')) return 'linux';
         if (userAgent.includes('android')) return 'android';
-        if (userAgent.includes('iphone') || userAgent.includes('ipad') || userAgent.includes('ipod')) return 'ios';
         return 'unknown';
     }
 
     const currentOSID = detectOS();
-    const currentOS = platforms.find(p => p.id === currentOSID) || platforms[0];
+    const currentOS = platforms.find(p => p.id === currentOSID);
 
-    // UI Elements
+    // Elements
+    const primaryWrapper = document.getElementById('primary-wrapper');
     const osNameEl = document.getElementById('os-name');
-    const primaryBtn = document.getElementById('primary-download-btn');
-    const otherPlatformsContainer = document.getElementById('other-platforms-container');
+    const primaryBtn = document.getElementById('primary-btn');
+    const platformsGrid = document.getElementById('platforms-grid');
 
-    // Setup initial UI states
-    if (currentOSID !== 'unknown') {
-        osNameEl.textContent = currentOS.name;
-        primaryBtn.innerHTML = `<i class="${currentOS.icon}"></i> ${currentOS.text}...`;
-    } else {
-        osNameEl.parentElement.textContent = 'Choose your platform below:';
-        document.getElementById('primary-download-card').style.display = 'none';
-    }
-
-    // Fetch the latest release from GitHub API
     async function fetchLatestReleaseAssets() {
         try {
             const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
-            if (!response.ok) throw new Error('No release found');
+            if (!response.ok) throw new Error('Failed to fetch API response');
             const data = await response.json();
             return data.assets || [];
         } catch (error) {
             console.error('Error fetching release:', error);
-            return [];
+            // Graceful fallback to repo releases page
+            return null;
         }
     }
 
-    // Initialize logic
     async function init() {
         const assets = await fetchLatestReleaseAssets();
 
-        // Match assets based on platform keywords
         const getAssetUrl = (platform) => {
-            if (assets.length === 0) return '#';
+            if (!assets) return `https://github.com/${REPO}/releases/latest`;
             const asset = assets.find(a => platform.match.some(m => a.name.includes(m)));
-            return asset ? asset.browser_download_url : '#';
+            return asset ? asset.browser_download_url : `https://github.com/${REPO}/releases/latest`;
         };
 
-        const primaryUrl = getAssetUrl(currentOS);
+        if (currentOS) {
+            primaryWrapper.classList.remove('hidden');
+            osNameEl.textContent = currentOS.name;
+            const primaryUrl = getAssetUrl(currentOS);
 
-        // Update primary button
-        if (currentOSID !== 'unknown') {
-            primaryBtn.innerHTML = `<i class="${currentOS.icon}"></i> ${currentOS.text}`;
             primaryBtn.onclick = () => {
-                if (primaryUrl !== '#') {
-                    window.location.href = primaryUrl;
-                } else {
-                    alert(`The ${currentOS.name} file is missing from the latest GitHub release. Check again later!`);
-                }
+                window.location.href = primaryUrl;
             };
         }
 
-        // Render other platforms
         platforms.forEach(platform => {
-            if (platform.id === currentOSID && currentOSID !== 'unknown') return;
+            if (platform.id === currentOSID) return;
 
             const url = getAssetUrl(platform);
             const card = document.createElement('div');
-            card.className = 'platform-card';
+            card.className = 'glass-card platform-card';
+
             card.innerHTML = `
-                <i class="${platform.icon} platform-icon"></i>
-                <div class="platform-name">${platform.name}</div>
-                <button class="btn btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.9rem;">
-                    <i class="ri-download-line"></i> Download
-                </button>
+                <div class="header-row">
+                    <i class="${platform.icon} plat-icon"></i>
+                </div>
+                <div class="plat-name">${platform.name}</div>
+                <a class="dl-link" onclick="window.location.href='${url}'">
+                    Download <i class="ri-arrow-right-line"></i>
+                </a>
             `;
 
-            const btn = card.querySelector('.btn');
-            btn.onclick = () => {
-                if (url !== '#') {
-                    window.location.href = url;
-                } else {
-                    alert(`The ${platform.name} file is missing from the latest GitHub release. Check again later!`);
-                }
-            };
-            otherPlatformsContainer.appendChild(card);
+            card.addEventListener('mousemove', (e) => {
+                const rect = card.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                card.style.background = `rgba(255, 255, 255, 0.05) radial-gradient(circle at ${x}px ${y}px, rgba(255,255,255,0.1) 0%, transparent 60%)`;
+            });
+            card.addEventListener('mouseleave', () => {
+                card.style.background = 'linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)';
+            });
+
+            platformsGrid.appendChild(card);
         });
     }
 

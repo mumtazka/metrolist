@@ -1,50 +1,94 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Download Metrolist, the seamless music playback app for all your devices.">
-    <title>Metrolist Download</title>
+    <title>Metrolist - The Ultimate Playback Experience</title>
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
 </head>
-<body>
-    <div class="background-glows">
-        <div class="glow glow-1"></div>
-        <div class="glow glow-2"></div>
-    </div>
-    
-    <div class="container">
-        <header class="hero">
-            <div class="logo-container">
-                <i class="ri-music-2-fill logo-icon"></i>
-            </div>
-            <h1 class="title">Metrolist</h1>
-            <p class="subtitle">Experience music like never before. Seamless playback across all your devices.</p>
-        </header>
 
-        <main class="download-section">
-            <div class="glass-card main-download" id="primary-download-card">
-                <p class="os-detected">Detected OS: <span id="os-name">Loading...</span></p>
-                <div id="primary-download-btn-container" class="primary-btn-wrapper">
-                    <button class="btn btn-primary" id="primary-download-btn">
-                        <i class="ri-download-line"></i> Download App
-                    </button>
-                    <p class="version-info">Version 1.0.0 • Free</p>
+<body>
+    <div class="ambient-background">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+        <div class="noise-overlay"></div>
+    </div>
+
+    <nav class="navbar">
+        <div class="nav-content">
+            <div class="brand">
+                <i class="ri-music-2-fill brand-icon"></i>
+                <span class="brand-name">Metrolist</span>
+            </div>
+            <a href="#downloads" class="nav-cta">Get App</a>
+        </div>
+    </nav>
+
+    <main>
+        <section class="hero-section">
+            <div class="hero-content fade-up">
+                <div class="badge">v13.3.0 is out now</div>
+                <h1 class="hero-title">
+                    Seamless playback.<br>
+                    <span class="text-gradient">Everywhere.</span>
+                </h1>
+                <p class="hero-subtitle">
+                    Experience your music across all devices with instant sync, lossless quality, and zero
+                    interruptions. Designed for perfection.
+                </p>
+                <div class="hero-actions">
+                    <a href="#downloads" class="btn btn-primary btn-glow">
+                        <i class="ri-download-cloud-2-line"></i> Download Now
+                    </a>
+                    <a href="https://github.com/mumtazka/metrolist" target="_blank" class="btn btn-secondary">
+                        <i class="ri-github-fill"></i> View Source
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <section id="downloads" class="downloads-section">
+            <div class="section-badge fade-up">Cross-Platform</div>
+            <h2 class="section-title fade-up">Available on all your favorite devices.</h2>
+
+            <div class="primary-download-wrapper fade-up hidden" id="primary-wrapper">
+                <div class="glass-card featured-card gradient-border">
+                    <div class="card-content">
+                        <div class="platform-match">
+                            <span class="pulse-dot"></span> Recommended for <span id="os-name" class="highlight">Your
+                                OS</span>
+                        </div>
+                        <h3 class="app-name">Metrolist</h3>
+                        <p class="app-desc">Get the native experience optimized for your device.</p>
+                        <button class="btn btn-primary btn-large w-full mt-4" id="primary-btn">
+                            <i class="ri-download-line icon-spin-hover"></i> Download <span class="version">Free</span>
+                        </button>
+                    </div>
                 </div>
             </div>
 
-            <h3 class="other-platforms-title">Other Platforms</h3>
-            <div class="grid-cards" id="other-platforms-container">
+            <div class="platforms-grid fade-up" id="platforms-grid">
                 <!-- Javascript will render other platforms here -->
             </div>
-        </main>
+        </section>
+    </main>
 
-        <footer>
-            <p>&copy; 2026 Metrolist. All rights reserved.</p>
-        </footer>
-    </div>
+    <footer>
+        <div class="footer-content fade-up">
+            <div class="brand">
+                <i class="ri-music-2-fill brand-icon"></i>
+                <span class="brand-name">Metrolist</span>
+            </div>
+            <p>&copy; 2026 Metrolist. Open Source &amp; Free.</p>
+        </div>
+    </footer>
+
     <script src="script.js"></script>
 </body>
+
 </html>
