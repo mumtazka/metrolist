@@ -8,6 +8,8 @@
     --text-main: #f8fafc;
     --text-muted: #94a3b8;
     --font-main: 'Outfit', sans-serif;
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --secondary: #8b5cf6;
 }
 
 * {
@@ -29,9 +31,51 @@ body {
     line-height: 1.6;
 }
 
+/* Navbar */
+.navbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    padding: 1.5rem 2rem;
+    z-index: 100;
+    background: rgba(10, 10, 12, 0.8);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--card-border);
+}
+
+.nav-content {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.brand-app-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    object-fit: cover;
+}
+
+.brand-name {
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+}
+
 /* Background Animations */
 .background-glows {
-    position: absolute;
+    position: fixed;
+    top: 0;
+    left: 0;
     width: 100vw;
     height: 100vh;
     overflow: hidden;
@@ -76,36 +120,12 @@ body {
     z-index: 1;
     max-width: 800px;
     width: 90%;
-    padding: 2rem;
+    padding: 8rem 2rem 4rem;
     text-align: center;
 }
 
 .hero {
     margin-bottom: 3rem;
-}
-
-.logo-container {
-    width: 80px;
-    height: 80px;
-    background: linear-gradient(135deg, var(--primary), var(--accent));
-    border-radius: 20px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    margin: 0 auto 1.5rem;
-    box-shadow: 0 10px 30px rgba(99, 102, 241, 0.3);
-    animation: float 6s ease-in-out infinite;
-}
-
-.logo-icon {
-    font-size: 2.5rem;
-    color: white;
-}
-
-@keyframes float {
-    0% { transform: translateY(0px); }
-    50% { transform: translateY(-10px); }
-    100% { transform: translateY(0px); }
 }
 
 .title {
@@ -122,11 +142,13 @@ body {
     font-size: 1.25rem;
     color: var(--text-muted);
     font-weight: 300;
+    max-width: 600px;
+    margin: 0 auto;
 }
 
 /* Components */
 .glass-card {
-    background: var(--card-bg);
+    background: rgba(255, 255, 255, 0.03);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border: 1px solid var(--card-border);

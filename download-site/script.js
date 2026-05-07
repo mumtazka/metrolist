@@ -28,15 +28,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // UI Elements
     const osNameEl = document.getElementById('os-name');
-    const primaryBtn = document.getElementById('primary-download-btn');
-    const otherPlatformsContainer = document.getElementById('other-platforms-container');
+    const primaryBtn = document.getElementById('primary-btn');
+    const platformsGrid = document.getElementById('platforms-grid');
 
     // Setup initial UI states
     if (currentOSID !== 'unknown') {
         osNameEl.textContent = currentOS.name;
         primaryBtn.innerHTML = `<i class="${currentOS.icon}"></i> ${currentOS.text}...`;
     } else {
-        osNameEl.parentElement.textContent = 'Choose your platform below:';
+        const osDetectedEl = document.querySelector('.os-detected');
+        if (osDetectedEl) osDetectedEl.textContent = 'Choose your platform below:';
         document.getElementById('primary-download-card').style.display = 'none';
     }
 
@@ -101,7 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     alert(`The ${platform.name} file is missing from the latest GitHub release. Check again later!`);
                 }
             };
-            otherPlatformsContainer.appendChild(card);
+            platformsGrid.appendChild(card);
         });
     }
 
