@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import com.metrolist.desktop.data.AppUpdater
 import com.metrolist.desktop.player.PlayerSong
 import com.metrolist.desktop.player.PlayerState
 import com.metrolist.desktop.viewmodel.DesktopViewModel
@@ -198,6 +199,7 @@ fun LeftSidebarPanel(
                 icon = Icons.Rounded.Settings,
                 selected = currentScreen == NavScreen.SETTINGS,
                 onClick = { onNavigate(NavScreen.SETTINGS) },
+                showBadge = AppUpdater.updateAvailable,
             )
             Spacer(Modifier.height(8.dp))
         }
@@ -212,6 +214,7 @@ private fun SidebarNavItem(
     selected: Boolean,
     onClick: () -> Unit,
     tintOverride: Color? = null,
+    showBadge: Boolean = false,
 ) {
     var hovered by remember { mutableStateOf(false) }
     val bg = when {
@@ -236,7 +239,18 @@ private fun SidebarNavItem(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, label, tint = contentColor, modifier = Modifier.size(20.dp))
+            Box(contentAlignment = Alignment.TopEnd) {
+                Icon(icon, label, tint = contentColor, modifier = Modifier.size(20.dp))
+                if (showBadge) {
+                    Box(
+                        Modifier
+                            .size(8.dp)
+                            .offset(x = 3.dp, y = (-3).dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.error),
+                    )
+                }
+            }
             Spacer(Modifier.width(12.dp))
             Text(label,
                 style = MaterialTheme.typography.bodyMedium,

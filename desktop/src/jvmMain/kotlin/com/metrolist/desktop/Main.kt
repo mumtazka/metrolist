@@ -43,6 +43,9 @@ import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.metrolist.desktop.auth.DesktopPreferences
+import com.metrolist.desktop.data.AppUpdater
+import com.metrolist.desktop.data.DESKTOP_APP_VERSION
+import com.metrolist.desktop.data.UpdateDownloadState
 import com.metrolist.desktop.player.LyricLine
 import com.metrolist.desktop.player.PlayerState
 import com.metrolist.desktop.search.SearchRanker
@@ -51,6 +54,7 @@ import com.metrolist.desktop.viewmodel.DesktopViewModel
 import com.metrolist.innertube.models.*
 import com.metrolist.innertube.pages.HomePage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.metrolist.desktop.sync.DesktopSyncClient
 import com.metrolist.desktop.ui.AsyncImage
 import com.metrolist.desktop.ui.LeftSidebarPanel
@@ -149,6 +153,10 @@ fun main() = application {
                 dynamicColorFromAlbumArt = dynamicColor,
             )
             DesktopPreferences.save(config)
+        }
+
+        LaunchedEffect(Unit) {
+            AppUpdater.startPeriodicCheck()
         }
 
         // Load home on first launch
@@ -1337,6 +1345,7 @@ fun SettingsScreen(
 ) {
     var cookieInput by remember { mutableStateOf("") }
     var showCookieDialog by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
@@ -1566,9 +1575,169 @@ fun SettingsScreen(
             }
         }
 
+        SettingsSection("App Updates", Icons.Rounded.SystemUpdate) {
+            ListItem(
+                headlineContent = { Text("Current version") },
+                supportingContent = { Text("Metrolist Desktop v$DESKTOP_APP_VERSION") },
+                leadingContent = {
+                    Icon(
+                        Icons.Rounded.Info,
+                        null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                trailingContent = {
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                runCatching { AppUpdater.checkForUpdate() }
+                                    .onFailure { println("[Updater] Manual check failed: ${it.message}") }
+                            }
+                        },
+                    ) {
+                        Icon(Icons.Rounded.Refresh, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Check now", style = MaterialTheme.typography.labelMedium)
+                    }
+                },
+            )
+            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+            if (!AppUpdater.updateAvailable) {
+                ListItem(
+                    headlineContent = { Text("You're up to date") },
+                    supportingContent = {
+                        Text(
+                            if (AppUpdater.latestVersion != null)
+                                "Latest: v${AppUpdater.latestVersion}"
+                            else
+                                "Checking for updates...",
+                        )
+                    },
+                    leadingContent = {
+                        Icon(
+                            Icons.Rounded.CheckCircle,
+                            null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    },
+                )
+            } else {
+                val downloadState = AppUpdater.downloadState
+                val downloadProgress = AppUpdater.downloadProgress
+
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            "Update available - v${AppUpdater.latestVersion}",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    },
+                    supportingContent = { Text("Your version: v$DESKTOP_APP_VERSION") },
+                    leadingContent = {
+                        Icon(
+                            Icons.Rounded.NewReleases,
+                            null,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    },
+                )
+
+                AppUpdater.releaseNotes?.let { notes ->
+                    var expanded by remember(notes) { mutableStateOf(false) }
+
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        TextButton(onClick = { expanded = !expanded }) {
+                            Icon(
+                                if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                null,
+                                Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (expanded) "Hide changelog" else "View changelog")
+                        }
+                        AnimatedVisibility(expanded) {
+                            Text(
+                                notes,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    when (downloadState) {
+                        UpdateDownloadState.IDLE -> {
+                            Button(onClick = { AppUpdater.downloadUpdate() }) {
+                                Icon(Icons.Rounded.Download, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Download & Install")
+                            }
+                        }
+
+                        UpdateDownloadState.DOWNLOADING -> {
+                            LinearProgressIndicator(
+                                progress = { downloadProgress },
+                                modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)),
+                            )
+                            Text(
+                                "${(downloadProgress * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        UpdateDownloadState.DONE -> {
+                            Icon(
+                                Icons.Rounded.DownloadDone,
+                                null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Button(onClick = { AppUpdater.applyUpdate() }) {
+                                Icon(Icons.Rounded.InstallDesktop, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Install Now")
+                            }
+                            TextButton(onClick = { AppUpdater.openDownloadedInstallerLocation() }) {
+                                Text("Show file")
+                            }
+                        }
+
+                        UpdateDownloadState.ERROR -> {
+                            Icon(
+                                Icons.Rounded.ErrorOutline,
+                                null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Text(
+                                "Download failed",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            TextButton(onClick = { AppUpdater.downloadUpdate() }) {
+                                Text("Retry")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // About
         SettingsSection("About", Icons.Rounded.Info) {
-            ListItem(headlineContent = { Text("Version") }, supportingContent = { Text("Metrolist Desktop v1.0.0") })
+            ListItem(
+                headlineContent = { Text("Version") },
+                supportingContent = { Text("Metrolist Desktop v$DESKTOP_APP_VERSION") },
+            )
             ListItem(headlineContent = { Text("License") }, supportingContent = { Text("GPL-3.0 · Open Source") })
         }
     }
