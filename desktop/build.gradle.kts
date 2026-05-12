@@ -38,7 +38,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Deb, TargetFormat.Exe, TargetFormat.Dmg)
             packageName = "Metrolist"
-            packageVersion = "1.0.0"
+            packageVersion = "13.3.0"
             description = "Metrolist Desktop - YouTube Music Client"
             vendor = "MetrolistGroup"
 

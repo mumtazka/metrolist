@@ -43,22 +43,29 @@ document.addEventListener('DOMContentLoaded', () => {
     const osNameEl = document.getElementById('os-name');
     const primaryBtn = document.getElementById('primary-btn');
     const platformsGrid = document.getElementById('platforms-grid');
+    const versionBadge = document.querySelector('.badge');
+    const versionSpan = document.querySelector('.version');
 
-    async function fetchLatestReleaseAssets() {
+    async function fetchLatestRelease() {
         try {
             const response = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
             if (!response.ok) throw new Error('Failed to fetch API response');
             const data = await response.json();
-            return data.assets || [];
+            return data;
         } catch (error) {
             console.error('Error fetching release:', error);
-            // Graceful fallback to repo releases page
             return null;
         }
     }
 
     async function init() {
-        const assets = await fetchLatestReleaseAssets();
+        const release = await fetchLatestRelease();
+        const assets = release ? release.assets : null;
+        const tagName = release ? release.tag_name : 'v1.0.0';
+
+        // Update version strings in UI
+        if (versionBadge) versionBadge.textContent = `${tagName} is out now`;
+        if (versionSpan) versionSpan.textContent = tagName;
 
         const getAssetUrl = (platform) => {
             if (!assets) return `https://github.com/${REPO}/releases/latest`;
