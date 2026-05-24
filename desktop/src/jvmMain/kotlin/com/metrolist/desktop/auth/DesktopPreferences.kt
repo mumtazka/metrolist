@@ -8,6 +8,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+
 
 @Serializable
 data class DesktopConfig(
@@ -25,7 +30,12 @@ data class DesktopConfig(
 
 object DesktopPreferences {
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
-    private val configDir = File(System.getProperty("user.home"), ".metrolist")
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+    private val configDir = runCatching {
+        File(System.getProperty("user.home") ?: ".", ".metrolist").also { it.mkdirs() }
+    }.getOrElse {
+        File(".metrolist").also { it.mkdirs() }
+    }
     private val configFile = File(configDir, "config.json")
 
     fun load(): DesktopConfig {
@@ -38,8 +48,16 @@ object DesktopPreferences {
     }
 
     fun save(config: DesktopConfig) {
-        configDir.mkdirs()
-        configFile.writeText(json.encodeToString(config))
+        scope.launch {
+            try {
+                if (!configDir.exists()) {
+                    configDir.mkdirs()
+                }
+                configFile.writeText(json.encodeToString(config))
+            } catch (e: Exception) {
+                println("[Preferences] Failed to save config: ${e.message}")
+            }
+        }
     }
 
     val isLoggedIn: Boolean

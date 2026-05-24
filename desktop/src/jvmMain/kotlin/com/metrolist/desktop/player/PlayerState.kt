@@ -47,6 +47,7 @@ class PlayerState {
     var currentLyricIndex by mutableStateOf(-1)
     var showLyrics by mutableStateOf(false)
     var showQueue by mutableStateOf(false)
+    var showRightPanel by mutableStateOf(true)
     var lyricsLoading by mutableStateOf(false)
     /**
      * How many ms to advance lyrics AHEAD of the raw mpv position.
@@ -146,13 +147,14 @@ class PlayerState {
 
         // Resolve stream URL and play via mpv
         resolveJob = scope.launch(Dispatchers.IO) {
+            val mediaTitle = song.mediaTitle()
             if (localPath != null) {
                 println("[Player] Playing from local file: $localPath")
-                mpv.play(localPath, "LOCAL")
+                mpv.play(localPath, "LOCAL", mediaTitle)
                 mpv.setVolume((volume * 100).toInt())
                 // isPlaying / isLoadingStream set by onPlaybackStarted
             } else {
-                resolveAndPlay(song.id)
+                resolveAndPlay(song.id, mediaTitle)
             }
         }
 
@@ -176,7 +178,7 @@ class PlayerState {
      * All clients are launched IN PARALLEL — the first one that returns a valid URL wins.
      * This dramatically reduces start-up latency from ~5s (sequential) to ~1s.
      */
-    private suspend fun resolveAndPlay(videoId: String) {
+    private suspend fun resolveAndPlay(videoId: String, mediaTitle: String?) {
         println("[Player] Resolving stream for videoId=$videoId (parallel, ${streamClients.size} clients)")
 
         data class StreamResult(val url: String, val clientName: String, val durationMs: Long?)
@@ -254,7 +256,7 @@ class PlayerState {
         }
 
         winner.durationMs?.let { duration = it }
-        mpv.play(winner.url, winner.clientName)
+        mpv.play(winner.url, winner.clientName, mediaTitle)
         mpv.setVolume((volume * 100).toInt())
         // isPlaying and isLoadingStream will be set by mpv.onPlaybackStarted
         // once mpv actually starts outputting audio
@@ -326,6 +328,16 @@ class PlayerState {
             isPlaying = false
             stopPositionUpdates()
         }
+    }
+
+    fun stop() {
+        mpv.stop()
+        isPlaying = false
+        currentPosition = 0L
+        duration = 0L
+        isLoadingStream = false
+        streamError = null
+        stopPositionUpdates()
     }
 
     /** Play a song by its YouTube video ID (creates a minimal PlayerSong). */
@@ -434,7 +446,7 @@ class PlayerState {
     fun cleanup() {
         resolveJob?.cancel()
         lyricsJob?.cancel()
-        mpv.stop()
+        stop()
         scope.cancel()
     }
 
@@ -448,3 +460,9 @@ class PlayerState {
     }
 }
 
+private fun PlayerSong.mediaTitle(): String? = when {
+    title.isBlank() && artist.isBlank() -> null
+    artist.isBlank() -> title
+    title.isBlank() -> artist
+    else -> "$title - $artist"
+}

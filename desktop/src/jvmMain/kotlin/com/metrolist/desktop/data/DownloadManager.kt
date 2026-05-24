@@ -127,6 +127,10 @@ object DownloadManager {
         }
     }
 
+    fun downloadSongs(songs: List<PlayerSong>) {
+        songs.forEach(::downloadSong)
+    }
+
     fun deleteSong(videoId: String) {
         val record = downloadedSongs.find { it.id == videoId } ?: return
         try { File(record.localPath).delete() } catch (_: Exception) {}

@@ -28,9 +28,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.font.FontWeight
@@ -55,9 +59,14 @@ import com.metrolist.innertube.models.*
 import com.metrolist.innertube.pages.HomePage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import com.metrolist.desktop.sync.DesktopSyncClient
+import com.metrolist.desktop.media.createDesktopMediaSession
+import com.metrolist.desktop.media.toMediaSnapshot
 import com.metrolist.desktop.ui.AsyncImage
+import com.metrolist.desktop.ui.AddToPlaylistButton
 import com.metrolist.desktop.ui.LeftSidebarPanel
+import com.metrolist.desktop.ui.LocalPlaylistNameDialog
 import com.metrolist.desktop.ui.NavScreen
 import com.metrolist.desktop.ui.NowPlayingPanel
 import com.metrolist.desktop.ui.TopBar
@@ -93,9 +102,14 @@ fun main() = application {
     val windowState = rememberWindowState(
         placement = WindowPlacement.Maximized,
     )
+    var windowVisible by remember { mutableStateOf(true) }
 
     Window(
-        onCloseRequest = ::exitApplication,
+        onCloseRequest = {
+            // Minimize to tray instead of exiting (tray has "Quit" menu item)
+            windowVisible = false
+        },
+        visible = windowVisible,
         title = "Metrolist",
         state = windowState,
     ) {
@@ -104,15 +118,55 @@ fun main() = application {
             window.minimumSize = Dimension(900, 600)
         }
 
+        val focusRequester = remember { FocusRequester() }
+
+        // Request focus for media key event handling when window is visible
+        LaunchedEffect(windowVisible) {
+            if (windowVisible) {
+                kotlinx.coroutines.delay(200)
+                focusRequester.requestFocus()
+            }
+        }
+
         val scope = rememberCoroutineScope()
         val viewModel = remember { DesktopViewModel(scope) }
         val playerState = remember { PlayerState() }
+        var cleanupDone by remember { mutableStateOf(false) }
+        val mediaSession = remember {
+            createDesktopMediaSession(
+                playerState = playerState,
+                awtWindow = window,
+                onShowWindow = {
+                    windowVisible = true
+                    window.toFront()
+                    window.requestFocus()
+                },
+                onExit = {
+                    windowVisible = false
+                    if (!cleanupDone) {
+                        cleanupDone = true
+                        exitApplication()
+                    }
+                },
+            )
+        }
         val syncClient = remember { com.metrolist.desktop.sync.DesktopSyncClient(
             relayUrl = "wss://metrolistsyncrelay-ooae5v0w.b4a.run/sync",
             playerState = playerState,
         ) }
         var currentScreen by remember { mutableStateOf(Screen.HOME) }
         var searchQuery by remember { mutableStateOf("") }
+        var showCreateLocalPlaylistDialog by remember { mutableStateOf(false) }
+
+        fun openPlaylistScreen(playlistId: String) {
+            currentScreen = Screen.PLAYLIST
+            viewModel.openPlaylist(playlistId)
+        }
+
+        fun openLocalPlaylistScreen(playlistId: String) {
+            currentScreen = Screen.PLAYLIST
+            viewModel.openLocalPlaylist(playlistId)
+        }
 
         // Load persisted settings from disk
         val savedConfig = remember { DesktopPreferences.load() }
@@ -174,10 +228,16 @@ fun main() = application {
             }
         }
 
+        LaunchedEffect(mediaSession, playerState) {
+            snapshotFlow { playerState.toMediaSnapshot() }
+                .collect { mediaSession.update(it) }
+        }
+
         // Clean up on close
         DisposableEffect(Unit) {
             onDispose {
                 saveDesktopConfig()
+                mediaSession.close()
                 syncClient.disconnect()
                 playerState.cleanup()
             }
@@ -239,14 +299,41 @@ fun main() = application {
 
         MetrolistTheme(pureBlack = pureBlack, themeColor = themeColor) {
             Surface(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .focusable()
+                    .focusRequester(focusRequester)
+                    .onFocusEvent { state ->
+                        if (state.isFocused) {
+                            println("[KeyEvent] Window focused — media keys active")
+                        }
+                    }
+                    .onPreviewKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown) {
+                            when (event.key) {
+                                Key.MediaPlayPause -> {
+                                    playerState.togglePlayPause(); true
+                                }
+                                Key.MediaNext -> {
+                                    playerState.skipNext(); true
+                                }
+                                Key.MediaPrevious -> {
+                                    playerState.skipPrevious(); true
+                                }
+                                Key.MediaStop -> {
+                                    playerState.stop(); true
+                                }
+                                else -> false
+                            }
+                        } else false
+                    },
                 color = MaterialTheme.colorScheme.background,
             ) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val totalWidth = maxWidth
                     // Responsive breakpoints
                     val showLeftSidebar  = totalWidth >= 600.dp
-                    val showRightPanel   = totalWidth >= 1100.dp && (playerState.currentSong != null || playerState.showQueue)
+                    val showRightPanel   = totalWidth >= 1100.dp && playerState.showRightPanel && (playerState.currentSong != null || playerState.showQueue)
                     val leftWidth        = 260.dp
                     val rightWidth       = 280.dp
 
@@ -263,6 +350,14 @@ fun main() = application {
                                     currentScreen = currentScreen,
                                     onNavigate = { currentScreen = it },
                                     viewModel = viewModel,
+                                    selectedPlaylistId = viewModel.currentPlaylistId,
+                                    selectedLocalPlaylistId = viewModel.currentLocalPlaylistId,
+                                    onPlaylistSelected = { openPlaylistScreen(it.id) },
+                                    onLocalPlaylistSelected = { openLocalPlaylistScreen(it.id) },
+                                    onCreatePlaylist = {
+                                        currentScreen = Screen.PLAYLIST
+                                        showCreateLocalPlaylistDialog = true
+                                    },
                                     modifier = Modifier.width(leftWidth),
                                 )
                             }
@@ -288,12 +383,28 @@ fun main() = application {
                                 )
                                 Box(modifier = Modifier.weight(1f)) {
                                     when (currentScreen) {
-                                        Screen.HOME      -> HomeScreen(viewModel, playerState)
-                                        Screen.SEARCH    -> SearchScreen(viewModel, searchQuery, { searchQuery = it }, playerState)
+                                        Screen.HOME      -> HomeScreen(
+                                            viewModel,
+                                            playerState,
+                                            onOpenPlaylist = { openPlaylistScreen(it.id) },
+                                        )
+                                        Screen.SEARCH    -> SearchScreen(
+                                            viewModel,
+                                            searchQuery,
+                                            { searchQuery = it },
+                                            playerState,
+                                            onOpenPlaylist = { openPlaylistScreen(it.id) },
+                                        )
                                         Screen.LIBRARY   -> LibraryScreen(viewModel, playerState)
+                                        Screen.PLAYLIST  -> PlaylistScreen(
+                                            viewModel = viewModel,
+                                            playerState = playerState,
+                                            onRetry = viewModel::retryCurrentPlaylist,
+                                            onCreatePlaylist = { showCreateLocalPlaylistDialog = true },
+                                        )
                                         Screen.LIKED     -> LikedSongsScreen(viewModel, playerState)
-                                        Screen.DOWNLOADS -> DownloadsScreen(playerState)
-                                        Screen.CACHE     -> CachedScreen(playerState)
+                                        Screen.DOWNLOADS -> DownloadsScreen(playerState, viewModel)
+                                        Screen.CACHE     -> CachedScreen(playerState, viewModel)
                                         Screen.SETTINGS  -> SettingsScreen(
                                             viewModel,
                                             pureBlack, { pureBlack = it },
@@ -350,6 +461,20 @@ fun main() = application {
                 }
             }
         }
+
+        if (showCreateLocalPlaylistDialog) {
+            LocalPlaylistNameDialog(
+                title = "Create playlist",
+                initialValue = "",
+                confirmLabel = "Create",
+                onDismiss = { showCreateLocalPlaylistDialog = false },
+                onConfirm = { name ->
+                    val playlist = viewModel.createLocalPlaylist(name)
+                    showCreateLocalPlaylistDialog = false
+                    playlist?.let { openLocalPlaylistScreen(it.id) }
+                },
+            )
+        }
     }
 }
 
@@ -382,7 +507,11 @@ fun Modifier.hoverBackground(
 // ============================================================
 
 @Composable
-fun HomeScreen(viewModel: DesktopViewModel, playerState: PlayerState) {
+fun HomeScreen(
+    viewModel: DesktopViewModel,
+    playerState: PlayerState,
+    onOpenPlaylist: (PlaylistItem) -> Unit,
+) {
     when {
         viewModel.homeLoading && viewModel.homeSections.isEmpty() -> {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -441,7 +570,11 @@ fun HomeScreen(viewModel: DesktopViewModel, playerState: PlayerState) {
 
                 // Real YouTube Music sections
                 items(viewModel.homeSections) { section ->
-                    HomeSectionView(section, playerState)
+                    HomeSectionView(
+                        section = section,
+                        playerState = playerState,
+                        onOpenPlaylist = onOpenPlaylist,
+                    )
                 }
 
                 if (viewModel.homeLoading) {
@@ -457,7 +590,11 @@ fun HomeScreen(viewModel: DesktopViewModel, playerState: PlayerState) {
 }
 
 @Composable
-fun HomeSectionView(section: HomePage.Section, playerState: PlayerState) {
+fun HomeSectionView(
+    section: HomePage.Section,
+    playerState: PlayerState,
+    onOpenPlaylist: (PlaylistItem) -> Unit,
+) {
     Column {
         // Section header
         Row(
@@ -480,14 +617,24 @@ fun HomeSectionView(section: HomePage.Section, playerState: PlayerState) {
         ) {
             val songs = section.items.filterIsInstance<SongItem>()
             items(section.items) { item ->
-                YTItemCard(item, playerState, contextSongs = songs)
+                YTItemCard(
+                    item = item,
+                    playerState = playerState,
+                    contextSongs = songs,
+                    onOpenPlaylist = onOpenPlaylist,
+                )
             }
         }
     }
 }
 
 @Composable
-fun YTItemCard(item: YTItem, playerState: PlayerState, contextSongs: List<SongItem> = emptyList()) {
+fun YTItemCard(
+    item: YTItem,
+    playerState: PlayerState,
+    contextSongs: List<SongItem> = emptyList(),
+    onOpenPlaylist: (PlaylistItem) -> Unit = {},
+) {
     var hovered by remember { mutableStateOf(false) }
     val thumbnailUrl = item.thumbnail
 
@@ -497,14 +644,18 @@ fun YTItemCard(item: YTItem, playerState: PlayerState, contextSongs: List<SongIt
         color = Color.Transparent,
         onClick = {
             // For songs, start playback simulation
-            if (item is SongItem) {
-                if (contextSongs.isNotEmpty()) {
-                    val queue = contextSongs.map { s -> com.metrolist.desktop.player.PlayerSong(s.id, s.title, s.artists.joinToString { a -> a.name }, s.thumbnail, (s.duration ?: 210) * 1000L) }
-                    val index = contextSongs.indexOf(item).coerceAtLeast(0)
-                    playerState.playQueue(queue, index)
-                } else {
-                    playerState.playSongItem(item)
+            when (item) {
+                is SongItem -> {
+                    if (contextSongs.isNotEmpty()) {
+                        val queue = contextSongs.map { s -> com.metrolist.desktop.player.PlayerSong(s.id, s.title, s.artists.joinToString { a -> a.name }, s.thumbnail, (s.duration ?: 210) * 1000L) }
+                        val index = contextSongs.indexOf(item).coerceAtLeast(0)
+                        playerState.playQueue(queue, index)
+                    } else {
+                        playerState.playSongItem(item)
+                    }
                 }
+                is PlaylistItem -> onOpenPlaylist(item)
+                else -> Unit
             }
         },
     ) {
@@ -589,7 +740,13 @@ fun YTItemCard(item: YTItem, playerState: PlayerState, contextSongs: List<SongIt
 // ============================================================
 
 @Composable
-fun SearchScreen(viewModel: DesktopViewModel, query: String, onQueryChange: (String) -> Unit, playerState: PlayerState) {
+fun SearchScreen(
+    viewModel: DesktopViewModel,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    playerState: PlayerState,
+    onOpenPlaylist: (PlaylistItem) -> Unit,
+) {
     // Debounced search
     LaunchedEffect(query) {
         if (query.isNotBlank()) {
@@ -698,14 +855,15 @@ fun SearchScreen(viewModel: DesktopViewModel, query: String, onQueryChange: (Str
                                 TopResultCard(
                                     item = topResult,
                                     playerState = playerState,
+                                    viewModel = viewModel,
                                     searchSongs = searchSongs,
+                                    onOpenPlaylist = onOpenPlaylist,
                                     modifier = Modifier.width(260.dp).fillMaxHeight(),
                                 )
                             }
-                            // Right: remaining results
                             LazyColumn(Modifier.weight(1f)) {
-                                items(restResults) { item ->
-                                    SearchResultRow(item, playerState, searchSongs)
+                                items(restResults, key = { it.id }) { item ->
+                                    SearchResultRow(item, playerState, viewModel, searchSongs, onOpenPlaylist)
                                 }
                             }
                         }
@@ -717,14 +875,16 @@ fun SearchScreen(viewModel: DesktopViewModel, query: String, onQueryChange: (Str
                                     TopResultCard(
                                         item = topResult,
                                         playerState = playerState,
+                                        viewModel = viewModel,
                                         searchSongs = searchSongs,
+                                        onOpenPlaylist = onOpenPlaylist,
                                         modifier = Modifier.fillMaxWidth(),
                                     )
                                     Spacer(Modifier.height(16.dp))
                                 }
                             }
-                            items(restResults) { item ->
-                                SearchResultRow(item, playerState, searchSongs)
+                            items(restResults, key = { it.id }) { item ->
+                                SearchResultRow(item, playerState, viewModel, searchSongs, onOpenPlaylist)
                             }
                         }
                     }
@@ -741,7 +901,9 @@ fun SearchScreen(viewModel: DesktopViewModel, query: String, onQueryChange: (Str
 fun TopResultCard(
     item: YTItem,
     playerState: PlayerState,
+    viewModel: DesktopViewModel,
     searchSongs: List<SongItem>,
+    onOpenPlaylist: (PlaylistItem) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var hovered by remember { mutableStateOf(false) }
@@ -785,16 +947,20 @@ fun TopResultCard(
             .onPointerEvent(PointerEventType.Enter) { hovered = true }
             .onPointerEvent(PointerEventType.Exit)  { hovered = false }
             .clickable {
-                if (item is SongItem) {
-                    val idx = searchSongs.indexOf(item).coerceAtLeast(0)
-                    val queue = searchSongs.map { s ->
-                        com.metrolist.desktop.player.PlayerSong(
-                            s.id, s.title,
-                            s.artists.joinToString { a -> a.name },
-                            s.thumbnail, (s.duration ?: 210) * 1000L,
-                        )
+                when (item) {
+                    is SongItem -> {
+                        val idx = searchSongs.indexOf(item).coerceAtLeast(0)
+                        val queue = searchSongs.map { s ->
+                            com.metrolist.desktop.player.PlayerSong(
+                                s.id, s.title,
+                                s.artists.joinToString { a -> a.name },
+                                s.thumbnail, (s.duration ?: 210) * 1000L,
+                            )
+                        }
+                        playerState.playQueue(queue, idx)
                     }
-                    playerState.playQueue(queue, idx)
+                    is PlaylistItem -> onOpenPlaylist(item)
+                    else -> Unit
                 }
             }
             .padding(20.dp),
@@ -1001,6 +1167,7 @@ fun TopResultCard(
         // ── Action buttons (songs only) ──
         if (item is SongItem) {
             Spacer(Modifier.height(14.dp))
+            val playlistSong = item.toPlayerSong()
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth(),
@@ -1035,6 +1202,11 @@ fun TopResultCard(
                     Spacer(Modifier.width(4.dp))
                     Text("Add", style = MaterialTheme.typography.labelLarge)
                 }
+                AddToPlaylistButton(
+                    song = playlistSong,
+                    viewModel = viewModel,
+                    modifier = Modifier.size(40.dp),
+                )
                 // Download / Downloaded
                 OutlinedButton(
                     onClick = {
@@ -1070,21 +1242,43 @@ fun TopResultCard(
 
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<SongItem> = emptyList()) {
+fun SearchResultRow(
+    item: YTItem,
+    playerState: PlayerState,
+    viewModel: DesktopViewModel,
+    contextSongs: List<SongItem> = emptyList(),
+    onOpenPlaylist: (PlaylistItem) -> Unit = {},
+) {
     var hovered by remember { mutableStateOf(false) }
+    // Hoisted outside hover block so dialog survives mouse-leave events
+    var showAddToPlaylistDialog by remember { mutableStateOf(false) }
+    val songForPlaylist: com.metrolist.desktop.player.PlayerSong? = if (item is SongItem) item.toPlayerSong() else null
+
+    if (showAddToPlaylistDialog && songForPlaylist != null) {
+        com.metrolist.desktop.ui.AddToPlaylistDialog(
+            song = songForPlaylist,
+            viewModel = viewModel,
+            onDismiss = { showAddToPlaylistDialog = false },
+        )
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
         color = if (hovered) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
         onClick = {
-            if (item is SongItem) {
-                if (contextSongs.isNotEmpty()) {
-                    val queue = contextSongs.map { s -> com.metrolist.desktop.player.PlayerSong(s.id, s.title, s.artists.joinToString { a -> a.name }, s.thumbnail, (s.duration ?: 210) * 1000L) }
-                    val index = contextSongs.indexOf(item).coerceAtLeast(0)
-                    playerState.playQueue(queue, index)
-                } else {
-                    playerState.playSongItem(item)
+            when (item) {
+                is SongItem -> {
+                    if (contextSongs.isNotEmpty()) {
+                        val queue = contextSongs.map { s -> com.metrolist.desktop.player.PlayerSong(s.id, s.title, s.artists.joinToString { a -> a.name }, s.thumbnail, (s.duration ?: 210) * 1000L) }
+                        val index = contextSongs.indexOf(item).coerceAtLeast(0)
+                        playerState.playQueue(queue, index)
+                    } else {
+                        playerState.playSongItem(item)
+                    }
                 }
+                is PlaylistItem -> onOpenPlaylist(item)
+                else -> Unit
             }
         },
     ) {
@@ -1154,6 +1348,7 @@ fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<S
             // Hover action buttons (songs only)
             if (hovered && item is SongItem) {
                 Spacer(Modifier.width(4.dp))
+                val playlistSong = item.toPlayerSong()
                 // Add to queue (with tooltip)
                 TooltipBox(
                     positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
@@ -1166,6 +1361,22 @@ fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<S
                     ) {
                         Icon(
                             Icons.Rounded.AddCircleOutline, "Add to queue",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+                TooltipBox(
+                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                    tooltip = { PlainTooltip { Text("Add to playlist") } },
+                    state = rememberTooltipState(),
+                ) {
+                    IconButton(
+                        onClick = { showAddToPlaylistDialog = true },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.AddCircleOutline, "Add to playlist",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
                         )
@@ -1246,6 +1457,543 @@ fun SearchResultRow(item: YTItem, playerState: PlayerState, contextSongs: List<S
 }
 
 // ============================================================
+// Playlist Screen
+// ============================================================
+
+private fun SongItem.toPlayerSong() = com.metrolist.desktop.player.PlayerSong(
+    id = id,
+    title = title,
+    artist = artists.joinToString { it.name },
+    albumArt = thumbnail,
+    durationMs = (duration ?: 210) * 1000L,
+)
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun LocalPlaylistSongRow(
+    song: com.metrolist.desktop.player.PlayerSong,
+    index: Int,
+    playlistSongs: List<com.metrolist.desktop.player.PlayerSong>,
+    playerState: PlayerState,
+    onRemove: () -> Unit,
+) {
+    var hovered by remember { mutableStateOf(false) }
+    val dlState = com.metrolist.desktop.data.DownloadManager.downloads[song.id]
+    val dlProgress = com.metrolist.desktop.data.DownloadManager.progress[song.id] ?: 0f
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = if (hovered) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
+        onClick = { playerState.playQueue(playlistSongs, index) },
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onPointerEvent(PointerEventType.Enter) { hovered = true }
+                .onPointerEvent(PointerEventType.Exit) { hovered = false }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${index + 1}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.width(28.dp),
+            )
+            Box(
+                Modifier.size(44.dp).clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                contentAlignment = Alignment.Center,
+            ) {
+                AsyncImage(
+                    url = song.albumArt,
+                    contentDescription = song.title,
+                    modifier = Modifier.fillMaxSize(),
+                    placeholder = {
+                        Icon(
+                            Icons.Rounded.MusicNote,
+                            null,
+                            Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                        )
+                    },
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    song.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    song.artist,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                PlayerState.formatTime(song.durationMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            )
+            Spacer(Modifier.width(8.dp))
+            AnimatedVisibility(hovered) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { playerState.playQueue(playlistSongs, index) },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(Icons.Rounded.PlayArrow, "Play", modifier = Modifier.size(20.dp))
+                    }
+                    IconButton(
+                        onClick = {
+                            if (dlState == null || dlState == com.metrolist.desktop.data.DownloadState.ERROR) {
+                                com.metrolist.desktop.data.DownloadManager.downloadSong(song)
+                            }
+                        },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        when (dlState) {
+                            com.metrolist.desktop.data.DownloadState.DONE ->
+                                Icon(Icons.Rounded.DownloadDone, "Downloaded", modifier = Modifier.size(18.dp))
+                            com.metrolist.desktop.data.DownloadState.DOWNLOADING,
+                            com.metrolist.desktop.data.DownloadState.QUEUED ->
+                                CircularProgressIndicator(
+                                    progress = { dlProgress },
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            else ->
+                                Icon(Icons.Rounded.Download, "Download", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    IconButton(
+                        onClick = onRemove,
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.Delete,
+                            "Remove from playlist",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun PlaylistScreen(
+    viewModel: DesktopViewModel,
+    playerState: PlayerState,
+    onRetry: () -> Unit,
+    onCreatePlaylist: () -> Unit,
+) {
+    val localPlaylist = viewModel.currentLocalPlaylist
+    val playlistPage = viewModel.currentPlaylistPage
+    val onlinePlaylist = playlistPage?.playlist
+    var showRenameDialog by remember(localPlaylist?.id) { mutableStateOf(false) }
+    var showDeleteDialog by remember(localPlaylist?.id) { mutableStateOf(false) }
+
+    when {
+        localPlaylist != null -> {
+            val songs = localPlaylist.songs.map { it.toPlayerSong() }
+
+            Column(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
+                                    MaterialTheme.colorScheme.background,
+                                )
+                            )
+                        )
+                        .padding(32.dp),
+                    contentAlignment = Alignment.BottomStart,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(20.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(140.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            AsyncImage(
+                                url = localPlaylist.songs.firstOrNull()?.albumArt,
+                                contentDescription = localPlaylist.name,
+                                modifier = Modifier.fillMaxSize(),
+                                placeholder = {
+                                    Icon(
+                                        Icons.AutoMirrored.Rounded.QueueMusic,
+                                        null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                                        modifier = Modifier.size(52.dp),
+                                    )
+                                },
+                            )
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "Your playlist",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                localPlaylist.name,
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                "${songs.size} song${if (songs.size == 1) "" else "s"}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Button(
+                                    onClick = { if (songs.isNotEmpty()) playerState.playQueue(songs, 0) },
+                                    enabled = songs.isNotEmpty(),
+                                ) {
+                                    Icon(Icons.Rounded.PlayArrow, "Play", Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Play")
+                                }
+                                OutlinedButton(
+                                    onClick = { if (songs.isNotEmpty()) playerState.playQueue(songs.shuffled(), 0) },
+                                    enabled = songs.isNotEmpty(),
+                                ) {
+                                    Icon(Icons.Rounded.Shuffle, "Shuffle", Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Shuffle")
+                                }
+                                OutlinedButton(
+                                    onClick = { com.metrolist.desktop.data.DownloadManager.downloadSongs(songs) },
+                                    enabled = songs.isNotEmpty(),
+                                ) {
+                                    Icon(Icons.Rounded.Download, "Download all", Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Download all")
+                                }
+                                OutlinedButton(onClick = { showRenameDialog = true }) {
+                                    Icon(Icons.Rounded.Edit, "Rename", Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Rename")
+                                }
+                                OutlinedButton(onClick = { showDeleteDialog = true }) {
+                                    Icon(Icons.Rounded.Delete, "Delete", Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Delete")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (songs.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Rounded.MusicOff,
+                                "No songs",
+                                modifier = Modifier.size(64.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            Text("This playlist is empty", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Add songs from search, cache, or downloads.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        itemsIndexed(localPlaylist.songs, key = { _, song -> song.id }) { index, song ->
+                            LocalPlaylistSongRow(
+                                song = song.toPlayerSong(),
+                                index = index,
+                                playlistSongs = songs,
+                                playerState = playerState,
+                                onRemove = { viewModel.removeSongFromLocalPlaylist(localPlaylist.id, song.id) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (showRenameDialog) {
+                LocalPlaylistNameDialog(
+                    title = "Rename playlist",
+                    initialValue = localPlaylist.name,
+                    confirmLabel = "Save",
+                    onDismiss = { showRenameDialog = false },
+                    onConfirm = { newName ->
+                        viewModel.renameLocalPlaylist(localPlaylist.id, newName)
+                        showRenameDialog = false
+                    },
+                )
+            }
+
+            if (showDeleteDialog) {
+                AlertDialog(
+                    onDismissRequest = { showDeleteDialog = false },
+                    title = { Text("Delete playlist?") },
+                    text = { Text("Delete \"${localPlaylist.name}\" and remove its saved song list?") },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                viewModel.deleteLocalPlaylist(localPlaylist.id)
+                                showDeleteDialog = false
+                            },
+                        ) {
+                            Text("Delete")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDeleteDialog = false }) {
+                            Text("Cancel")
+                        }
+                    },
+                )
+            }
+        }
+        viewModel.playlistLoading && playlistPage == null -> {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "Loading playlist...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        viewModel.playlistError != null && playlistPage == null -> {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Rounded.CloudOff,
+                        "Playlist error",
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text("Failed to load playlist", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        viewModel.playlistError ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    FilledTonalButton(onClick = onRetry) {
+                        Icon(Icons.Rounded.Refresh, "Retry", Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Retry")
+                    }
+                }
+            }
+        }
+        playlistPage == null || onlinePlaylist == null -> {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.QueueMusic,
+                        "Playlist",
+                        modifier = Modifier.size(72.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text("Open a playlist to view it", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Playlist pages work without signing in.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = onCreatePlaylist) {
+                        Icon(Icons.Rounded.Add, "Create", Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Create playlist")
+                    }
+                }
+            }
+        }
+        else -> {
+            val songs = playlistPage.songs
+            val subtitle = listOfNotNull(
+                onlinePlaylist.author?.name,
+                onlinePlaylist.songCountText,
+            ).joinToString(" · ")
+            val playerSongs = songs.map { it.toPlayerSong() }
+
+            Column(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
+                                    MaterialTheme.colorScheme.background,
+                                )
+                            )
+                        )
+                        .padding(32.dp),
+                    contentAlignment = Alignment.BottomStart,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(20.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(140.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            AsyncImage(
+                                url = onlinePlaylist.thumbnail,
+                                contentDescription = onlinePlaylist.title,
+                                modifier = Modifier.fillMaxSize(),
+                                placeholder = {
+                                    Icon(
+                                        Icons.AutoMirrored.Rounded.QueueMusic,
+                                        null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                                        modifier = Modifier.size(52.dp),
+                                    )
+                                },
+                            )
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "Playlist",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                onlinePlaylist.title,
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            if (subtitle.isNotBlank()) {
+                                Text(
+                                    subtitle,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Button(
+                                    onClick = { if (playerSongs.isNotEmpty()) playerState.playQueue(playerSongs, 0) },
+                                    enabled = songs.isNotEmpty(),
+                                ) {
+                                    Icon(Icons.Rounded.PlayArrow, "Play", Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Play")
+                                }
+                                OutlinedButton(
+                                    onClick = { if (playerSongs.isNotEmpty()) playerState.playQueue(playerSongs.shuffled(), 0) },
+                                    enabled = songs.isNotEmpty(),
+                                ) {
+                                    Icon(Icons.Rounded.Shuffle, "Shuffle", Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Shuffle")
+                                }
+                                OutlinedButton(
+                                    onClick = { com.metrolist.desktop.data.DownloadManager.downloadSongs(playerSongs) },
+                                    enabled = songs.isNotEmpty(),
+                                ) {
+                                    Icon(Icons.Rounded.Download, "Download all", Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Download all")
+                                }
+                                OutlinedButton(onClick = onRetry) {
+                                    Icon(Icons.Rounded.Refresh, "Reload", Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Reload")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (songs.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Rounded.MusicOff,
+                                "No songs",
+                                modifier = Modifier.size(64.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            Text("This playlist is empty", style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        item {
+                            Text(
+                                "${songs.size} song${if (songs.size == 1) "" else "s"}",
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        items(songs, key = { it.id }) { song ->
+                            SearchResultRow(
+                                item = song,
+                                playerState = playerState,
+                                viewModel = viewModel,
+                                contextSongs = songs,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
 // Library Screen — requires login
 // ============================================================
 
@@ -1266,7 +2014,7 @@ fun LibraryScreen(viewModel: DesktopViewModel, playerState: PlayerState) {
                     Text("Your playlists, liked songs, and more", style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(16.dp))
-                    Button(onClick = { openGoogleLogin() },
+                    Button(onClick = { openGoogleLogin(viewModel) },
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) {
                         Icon(Icons.AutoMirrored.Rounded.Login, "Login", Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
@@ -1315,7 +2063,7 @@ fun LikedSongsScreen(viewModel: DesktopViewModel, playerState: PlayerState) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Sign in to see your liked songs", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(12.dp))
-                    Button(onClick = { openGoogleLogin() }) {
+                    Button(onClick = { openGoogleLogin(viewModel) }) {
                         Text("Sign in with Google")
                     }
                 }
@@ -1369,14 +2117,34 @@ fun SettingsScreen(
                     leadingContent = { Icon(Icons.Rounded.Person, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
                 )
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { openGoogleLogin() }) {
+                    Button(
+                        onClick = {
+                            viewModel.clearLoginError()
+                            openGoogleLogin(viewModel)
+                        },
+                        enabled = !viewModel.loginInProgress,
+                    ) {
                         Icon(Icons.AutoMirrored.Rounded.Login, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("Sign in via browser")
+                        Text(if (viewModel.loginInProgress) "Signing in..." else "Sign in with Google")
                     }
-                    OutlinedButton(onClick = { showCookieDialog = true }) {
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.clearLoginError()
+                            showCookieDialog = true
+                        },
+                        enabled = !viewModel.loginInProgress,
+                    ) {
                         Text("Paste cookie")
                     }
+                }
+                viewModel.loginError?.let { message ->
+                    Text(
+                        text = message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    )
                 }
             }
         }
@@ -1745,7 +2513,11 @@ fun SettingsScreen(
     // Cookie paste dialog
     if (showCookieDialog) {
         AlertDialog(
-            onDismissRequest = { showCookieDialog = false },
+            onDismissRequest = {
+                if (!viewModel.loginInProgress) {
+                    showCookieDialog = false
+                }
+            },
             title = { Text("Paste YouTube Music Cookie") },
             text = {
                 Column {
@@ -1758,19 +2530,39 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth().height(120.dp),
                         maxLines = 5,
                     )
+                    viewModel.loginError?.let { message ->
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = message,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    if (cookieInput.isNotBlank()) {
-                        viewModel.loginWithCookie(cookieInput.trim())
-                        showCookieDialog = false
-                        cookieInput = ""
-                    }
-                }) { Text("Sign in") }
+                Button(
+                    onClick = {
+                        if (cookieInput.isNotBlank()) {
+                            viewModel.loginWithCookie(
+                                cookie = cookieInput.trim(),
+                                onSuccess = {
+                                    showCookieDialog = false
+                                    cookieInput = ""
+                                },
+                            )
+                        }
+                    },
+                    enabled = cookieInput.isNotBlank() && !viewModel.loginInProgress,
+                ) {
+                    Text(if (viewModel.loginInProgress) "Signing in..." else "Sign in")
+                }
             },
             dismissButton = {
-                TextButton(onClick = { showCookieDialog = false }) { Text("Cancel") }
+                TextButton(
+                    onClick = { showCookieDialog = false },
+                    enabled = !viewModel.loginInProgress,
+                ) { Text("Cancel") }
             }
         )
     }
@@ -1805,7 +2597,7 @@ fun SettingsSection(title: String, icon: ImageVector, content: @Composable Colum
 
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun CachedScreen(playerState: PlayerState) {
+fun CachedScreen(playerState: PlayerState, viewModel: DesktopViewModel) {
     val songs = com.metrolist.desktop.data.StreamCache.entries
     val usedMb = com.metrolist.desktop.data.StreamCache.usedBytes / 1024 / 1024
     val maxSize = com.metrolist.desktop.data.StreamCache.maxCacheSize
@@ -1863,21 +2655,20 @@ fun CachedScreen(playerState: PlayerState) {
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 itemsIndexed(sorted) { index, entry ->
+                    val playlistSong = com.metrolist.desktop.player.PlayerSong(
+                        id = entry.id,
+                        title = entry.title,
+                        artist = entry.artist,
+                        albumArt = entry.albumArt,
+                        durationMs = entry.durationMs,
+                    )
                     var hovered by remember { mutableStateOf(false) }
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(8.dp),
                         color = if (hovered) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
                         onClick = {
-                            playerState.playSong(
-                                com.metrolist.desktop.player.PlayerSong(
-                                    id = entry.id,
-                                    title = entry.title,
-                                    artist = entry.artist,
-                                    albumArt = entry.albumArt,
-                                    durationMs = entry.durationMs,
-                                )
-                            )
+                            playerState.playSong(playlistSong)
                         },
                     ) {
                         Row(
@@ -1944,20 +2735,23 @@ fun CachedScreen(playerState: PlayerState) {
                                 state = rememberTooltipState(),
                             ) {
                                 IconButton(
-                                    onClick = {
-                                        playerState.playSong(
-                                            com.metrolist.desktop.player.PlayerSong(
-                                                id = entry.id, title = entry.title,
-                                                artist = entry.artist, albumArt = entry.albumArt,
-                                                durationMs = entry.durationMs,
-                                            )
-                                        )
-                                    },
+                                    onClick = { playerState.playSong(playlistSong) },
                                     modifier = Modifier.size(36.dp),
                                 ) {
                                     Icon(Icons.Rounded.PlayArrow, "Play",
                                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                 }
+                            }
+                            TooltipBox(
+                                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                                tooltip = { PlainTooltip { Text("Add to playlist") } },
+                                state = rememberTooltipState(),
+                            ) {
+                                AddToPlaylistButton(
+                                    song = playlistSong,
+                                    viewModel = viewModel,
+                                    modifier = Modifier.size(36.dp),
+                                )
                             }
                             // Remove from cache
                             TooltipBox(
@@ -1991,7 +2785,7 @@ fun CachedScreen(playerState: PlayerState) {
 
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun DownloadsScreen(playerState: PlayerState) {
+fun DownloadsScreen(playerState: PlayerState, viewModel: DesktopViewModel) {
     val songs = com.metrolist.desktop.data.DownloadManager.downloadedSongs
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -2119,6 +2913,17 @@ fun DownloadsScreen(playerState: PlayerState) {
                                     Icon(Icons.Rounded.PlayArrow, "Play",
                                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                 }
+                            }
+                            TooltipBox(
+                                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                                tooltip = { PlainTooltip { Text("Add to playlist") } },
+                                state = rememberTooltipState(),
+                            ) {
+                                AddToPlaylistButton(
+                                    song = song.toPlayerSong(),
+                                    viewModel = viewModel,
+                                    modifier = Modifier.size(36.dp),
+                                )
                             }
                             // Delete button
                             TooltipBox(
@@ -2317,14 +3122,42 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
                             modifier = Modifier.size(20.dp),
                         )
                     }
-                    // Queue toggle button
+                    // Now Playing toggle button
                     IconButton(
-                        onClick = { playerState.showQueue = !playerState.showQueue },
+                        onClick = {
+                            if (playerState.showRightPanel && !playerState.showQueue) {
+                                playerState.showRightPanel = false
+                            } else {
+                                playerState.showRightPanel = true
+                                playerState.showQueue = false
+                            }
+                        },
                         Modifier.size(36.dp),
                     ) {
+                        val active = playerState.showRightPanel && !playerState.showQueue
+                        Icon(
+                            Icons.AutoMirrored.Rounded.QueueMusic, "Now Playing",
+                            tint = if (active) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    // Queue toggle button
+                    IconButton(
+                        onClick = {
+                            if (playerState.showRightPanel && playerState.showQueue) {
+                                playerState.showRightPanel = false
+                            } else {
+                                playerState.showRightPanel = true
+                                playerState.showQueue = true
+                            }
+                        },
+                        Modifier.size(36.dp),
+                    ) {
+                        val active = playerState.showRightPanel && playerState.showQueue
                         Icon(
                             Icons.Rounded.List, "Queue",
-                            tint = if (playerState.showQueue) MaterialTheme.colorScheme.primary
+                            tint = if (active) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
                         )
@@ -2512,12 +3345,8 @@ fun LyricsPanel(
 // Utilities
 // ============================================================
 
-fun openGoogleLogin() {
-    try {
-        AwtDesktop.getDesktop().browse(
-            URI("https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmusic.youtube.com")
-        )
-    } catch (_: Exception) { }
+fun openGoogleLogin(viewModel: DesktopViewModel) {
+    com.metrolist.desktop.auth.showGoogleLoginDialog(viewModel)
 }
 
 fun getGreeting(): String {

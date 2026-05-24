@@ -6,8 +6,12 @@ package com.metrolist.desktop.viewmodel
 
 import androidx.compose.runtime.*
 import com.metrolist.desktop.auth.DesktopPreferences
+import com.metrolist.desktop.data.LocalPlaylist
+import com.metrolist.desktop.data.LocalPlaylistStore
 import com.metrolist.desktop.search.SearchRanker
+import com.metrolist.desktop.player.PlayerSong
 import com.metrolist.innertube.YouTube
+import com.metrolist.innertube.utils.parseCookieString
 import com.metrolist.innertube.models.YTItem
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.innertube.models.AlbumItem
@@ -40,6 +44,10 @@ class DesktopViewModel(private val scope: CoroutineScope) {
         private set
     var isLoggedIn by mutableStateOf(false)
         private set
+    var loginInProgress by mutableStateOf(false)
+        private set
+    var loginError by mutableStateOf<String?>(null)
+        private set
 
     // ── Artist info (for now-playing panel) ──
     var artistPage by mutableStateOf<ArtistPage?>(null)
@@ -47,6 +55,24 @@ class DesktopViewModel(private val scope: CoroutineScope) {
     var artistLoading by mutableStateOf(false)
         private set
     private var lastArtistId: String? = null
+
+    // ── Playlist info ──
+    var currentPlaylistId by mutableStateOf<String?>(null)
+        private set
+    var currentLocalPlaylistId by mutableStateOf<String?>(null)
+        private set
+    var currentPlaylistPage by mutableStateOf<com.metrolist.innertube.pages.PlaylistPage?>(null)
+        private set
+    var playlistLoading by mutableStateOf(false)
+        private set
+    var playlistError by mutableStateOf<String?>(null)
+        private set
+
+    val localPlaylists: List<LocalPlaylist>
+        get() = LocalPlaylistStore.playlists
+
+    val currentLocalPlaylist: LocalPlaylist?
+        get() = currentLocalPlaylistId?.let(LocalPlaylistStore::getPlaylist)
 
     // ── User playlists (for left sidebar) ──
     var userPlaylists by mutableStateOf<List<PlaylistItem>>(emptyList())
@@ -73,8 +99,8 @@ class DesktopViewModel(private val scope: CoroutineScope) {
         }
     }
 
-    fun loadHome() {
-        if (homeLoading) return
+    fun loadHome(force: Boolean = false) {
+        if (homeLoading && !force) return
         homeLoading = true
         homeError = null
         scope.launch(Dispatchers.IO) {
@@ -145,6 +171,72 @@ class DesktopViewModel(private val scope: CoroutineScope) {
         }
     }
 
+    fun openPlaylist(playlistId: String) {
+        currentPlaylistId = playlistId
+        currentLocalPlaylistId = null
+        playlistLoading = true
+        playlistError = null
+        currentPlaylistPage = null
+        scope.launch(Dispatchers.IO) {
+            YouTube.playlist(playlistId).onSuccess { page ->
+                currentPlaylistPage = page
+                playlistLoading = false
+            }.onFailure { error ->
+                playlistError = error.message ?: "Failed to load playlist"
+                playlistLoading = false
+            }
+        }
+    }
+
+    fun retryCurrentPlaylist() {
+        currentPlaylistId?.let(::openPlaylist)
+    }
+
+    fun openLocalPlaylist(playlistId: String) {
+        currentLocalPlaylistId = playlistId
+        currentPlaylistId = null
+        currentPlaylistPage = null
+        playlistLoading = false
+        playlistError = null
+    }
+
+    fun clearPlaylistSelection() {
+        currentLocalPlaylistId = null
+        currentPlaylistId = null
+        currentPlaylistPage = null
+        playlistLoading = false
+        playlistError = null
+    }
+
+    fun createLocalPlaylist(name: String): LocalPlaylist? {
+        val normalized = name.trim()
+        if (normalized.isBlank()) return null
+        val playlist = LocalPlaylistStore.createPlaylist(normalized)
+        openLocalPlaylist(playlist.id)
+        return playlist
+    }
+
+    fun renameLocalPlaylist(playlistId: String, newName: String) {
+        val normalized = newName.trim()
+        if (normalized.isBlank()) return
+        LocalPlaylistStore.renamePlaylist(playlistId, normalized)
+    }
+
+    fun deleteLocalPlaylist(playlistId: String) {
+        LocalPlaylistStore.deletePlaylist(playlistId)
+        if (currentLocalPlaylistId == playlistId) {
+            clearPlaylistSelection()
+        }
+    }
+
+    fun addSongToLocalPlaylist(playlistId: String, song: PlayerSong): Boolean {
+        return LocalPlaylistStore.addSongToPlaylist(playlistId, song)
+    }
+
+    fun removeSongFromLocalPlaylist(playlistId: String, songId: String) {
+        LocalPlaylistStore.removeSongFromPlaylist(playlistId, songId)
+    }
+
     /**
      * Toggle like on a song by its video ID. Tracks liked IDs locally so the
      * heart icon and search ranking react immediately.
@@ -180,28 +272,78 @@ class DesktopViewModel(private val scope: CoroutineScope) {
         }
     }
 
-    fun loginWithCookie(cookie: String, visitorData: String = "", dataSyncId: String = "") {
-        YouTube.cookie = cookie
-        YouTube.visitorData = visitorData.ifBlank { null }
-        YouTube.dataSyncId = dataSyncId.ifBlank { null }
-        isLoggedIn = cookie.contains("SAPISID")
+    fun clearLoginError() {
+        loginError = null
+    }
 
-        scope.launch(Dispatchers.IO) {
-            YouTube.accountInfo().onSuccess { info ->
+    fun loginWithCookie(
+        cookie: String,
+        visitorData: String = "",
+        dataSyncId: String = "",
+        onSuccess: () -> Unit = {},
+        onFailure: (String) -> Unit = {},
+    ) {
+        if (loginInProgress) return
+
+        val normalizedCookie = cookie.trim()
+        val normalizedVisitorData = visitorData.trim()
+        val normalizedDataSyncId = dataSyncId.trim().substringBefore("||")
+
+        if (!parseCookieString(normalizedCookie).containsKey("SAPISID")) {
+            val message = "The sign-in session is missing SAPISID. Try signing in again."
+            loginError = message
+            onFailure(message)
+            return
+        }
+
+        val previousCookie = YouTube.cookie
+        val previousVisitorData = YouTube.visitorData
+        val previousDataSyncId = YouTube.dataSyncId
+        val previousLoggedIn = isLoggedIn
+        val previousAccountName = accountName
+        val previousAccountEmail = accountEmail
+
+        loginInProgress = true
+        loginError = null
+        YouTube.cookie = normalizedCookie
+        YouTube.visitorData = normalizedVisitorData.ifBlank { null }
+        YouTube.dataSyncId = normalizedDataSyncId.ifBlank { null }
+
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                YouTube.accountInfo()
+            }
+
+            result.onSuccess { info ->
+                isLoggedIn = true
                 accountName = info.name
                 accountEmail = info.email
-                val config = DesktopPreferences.load().copy(
-                    cookie = cookie,
-                    visitorData = visitorData,
-                    dataSyncId = dataSyncId,
-                    accountName = info.name,
-                    accountEmail = info.email ?: "",
+                DesktopPreferences.save(
+                    DesktopPreferences.load().copy(
+                        cookie = normalizedCookie,
+                        visitorData = normalizedVisitorData,
+                        dataSyncId = normalizedDataSyncId,
+                        accountName = info.name,
+                        accountEmail = info.email ?: "",
+                    )
                 )
-                DesktopPreferences.save(config)
+                loadHome(force = true)
+                loadUserPlaylists()
+                onSuccess()
+            }.onFailure { error ->
+                YouTube.cookie = previousCookie
+                YouTube.visitorData = previousVisitorData
+                YouTube.dataSyncId = previousDataSyncId
+                isLoggedIn = previousLoggedIn
+                accountName = previousAccountName
+                accountEmail = previousAccountEmail
+
+                val message = error.message ?: "Google sign-in failed. Please try again."
+                loginError = message
+                onFailure(message)
             }
-            // Reload home + playlists with auth
-            loadHome()
-            loadUserPlaylists()
+
+            loginInProgress = false
         }
     }
 
@@ -218,6 +360,6 @@ class DesktopViewModel(private val scope: CoroutineScope) {
             accountName = "", accountEmail = "",
         )
         DesktopPreferences.save(config)
-        loadHome()
+        loadHome(force = true)
     }
 }

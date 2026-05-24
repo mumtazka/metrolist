@@ -36,7 +36,11 @@ class MpvAudioPlayer {
     // Matches our custom status line: "POS:123.456"
     private val positionRegex = Regex("""POS:(\d+\.?\d*)""")
 
-    fun play(url: String, clientName: String = "WEB_REMIX") {
+    fun play(
+        url: String,
+        clientName: String = "WEB_REMIX",
+        mediaTitle: String? = null,
+    ) {
         stop()
         isStopping = false
         playbackStartedFired = false
@@ -85,8 +89,17 @@ class MpvAudioPlayer {
             // Use concatenation to prevent Kotlin from processing the ${...} as interpolation
             "--term-status-msg=POS:" + "\${=time-pos}",
 
-            url
+            url,
         )
+
+        if (isWindows) {
+            cmd.add(5, "--media-controls=yes")
+        }
+
+        mediaTitle?.takeIf { it.isNotBlank() }?.let { title ->
+            cmd.add(1, "--title=$title")
+            cmd.add(2, "--force-media-title=$title")
+        }
 
         try {
             println("[mpv] Starting playback...")

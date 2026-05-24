@@ -10,6 +10,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -17,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.metrolist.desktop.data.AppUpdater
+import com.metrolist.desktop.data.LocalPlaylist
 import com.metrolist.desktop.player.PlayerSong
 import com.metrolist.desktop.player.PlayerState
 import com.metrolist.desktop.viewmodel.DesktopViewModel
@@ -52,6 +55,7 @@ enum class NavScreen(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Rounded.Home),
     SEARCH("Explore", Icons.Rounded.Explore),
     LIBRARY("Library", Icons.Rounded.LibraryMusic),
+    PLAYLIST("Playlist", Icons.AutoMirrored.Rounded.QueueMusic),
     LIKED("Liked", Icons.Rounded.Favorite),
     DOWNLOADS("Downloads", Icons.Rounded.Download),
     CACHE("Cached", Icons.Rounded.CloudDownload),
@@ -64,9 +68,15 @@ fun LeftSidebarPanel(
     currentScreen: NavScreen,
     onNavigate: (NavScreen) -> Unit,
     viewModel: DesktopViewModel,
+    selectedPlaylistId: String?,
+    selectedLocalPlaylistId: String?,
+    onPlaylistSelected: (PlaylistItem) -> Unit,
+    onLocalPlaylistSelected: (LocalPlaylist) -> Unit,
+    onCreatePlaylist: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val playlists = viewModel.userPlaylists
+    val localPlaylists = viewModel.localPlaylists
     val scrollState = rememberLazyListState()
 
     Surface(
@@ -97,7 +107,7 @@ fun LeftSidebarPanel(
             }
 
             // ── Main Nav ──
-            listOf(NavScreen.HOME, NavScreen.SEARCH, NavScreen.LIBRARY).forEach { screen ->
+            listOf(NavScreen.HOME, NavScreen.SEARCH, NavScreen.LIBRARY, NavScreen.PLAYLIST).forEach { screen ->
                 SidebarNavItem(
                     label = screen.label,
                     icon = screen.icon,
@@ -155,38 +165,98 @@ fun LeftSidebarPanel(
                     .takeIf { currentScreen != NavScreen.CACHE },
             )
 
-            // ── Playlist list ──
-            if (!viewModel.isLoggedIn) {
-                Box(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                ) {
-                    Text("Sign in to see your playlists",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
-                }
-            } else if (playlists.isEmpty()) {
-                Box(
-                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
-                ) {
-                    Text("No playlists yet",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                }
-            } else {
-                LazyColumn(
-                    state = scrollState,
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Your Playlists",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(bottom = 8.dp),
+                )
+                IconButton(
+                    onClick = onCreatePlaylist,
+                    modifier = Modifier.size(28.dp),
                 ) {
-                    itemsIndexed(playlists) { _, playlist ->
-                        PlaylistSidebarItem(playlist = playlist)
-                    }
+                    Icon(Icons.Rounded.Add, "Create playlist", modifier = Modifier.size(18.dp))
                 }
             }
 
-            // Push settings to bottom
-            if (viewModel.isLoggedIn && playlists.isEmpty()) Spacer(Modifier.weight(1f))
-            if (!viewModel.isLoggedIn) Spacer(Modifier.weight(1f))
+            LazyColumn(
+                state = scrollState,
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(bottom = 8.dp),
+            ) {
+                if (localPlaylists.isEmpty()) {
+                    item {
+                        Box(
+                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                        ) {
+                            Text(
+                                "Create a playlist to save songs from search, cache, or downloads",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            )
+                        }
+                    }
+                } else {
+                    items(localPlaylists) { playlist ->
+                        LocalPlaylistSidebarItem(
+                            playlist = playlist,
+                            selected = currentScreen == NavScreen.PLAYLIST &&
+                                selectedLocalPlaylistId == playlist.id,
+                            onClick = { onLocalPlaylistSelected(playlist) },
+                        )
+                    }
+                }
+
+                item {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "YouTube Playlists",
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                if (!viewModel.isLoggedIn) {
+                    item {
+                        Box(
+                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                        ) {
+                            Text(
+                                "Sign in to see your YouTube playlists",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            )
+                        }
+                    }
+                } else if (playlists.isEmpty()) {
+                    item {
+                        Box(
+                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                        ) {
+                            Text(
+                                "No YouTube playlists yet",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            )
+                        }
+                    }
+                } else {
+                    items(playlists) { playlist ->
+                        PlaylistSidebarItem(
+                            playlist = playlist,
+                            selected = currentScreen == NavScreen.PLAYLIST && selectedPlaylistId == playlist.id,
+                            onClick = { onPlaylistSelected(playlist) },
+                        )
+                    }
+                }
+            }
 
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 16.dp),
@@ -264,7 +334,11 @@ private fun SidebarNavItem(
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun PlaylistSidebarItem(playlist: PlaylistItem) {
+private fun PlaylistSidebarItem(
+    playlist: PlaylistItem,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
     var hovered by remember { mutableStateOf(false) }
     Surface(
         modifier = Modifier
@@ -273,8 +347,12 @@ private fun PlaylistSidebarItem(playlist: PlaylistItem) {
             .onPointerEvent(PointerEventType.Enter) { hovered = true }
             .onPointerEvent(PointerEventType.Exit)  { hovered = false },
         shape = RoundedCornerShape(8.dp),
-        color = if (hovered) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
-        onClick = { /* TODO: open playlist */ },
+        color = when {
+            selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+            hovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+            else -> Color.Transparent
+        },
+        onClick = onClick,
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -307,7 +385,8 @@ private fun PlaylistSidebarItem(playlist: PlaylistItem) {
             Column(Modifier.weight(1f)) {
                 Text(playlist.title,
                     style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 val sub = buildString {
                     append("Playlist")
@@ -317,6 +396,67 @@ private fun PlaylistSidebarItem(playlist: PlaylistItem) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun LocalPlaylistSidebarItem(
+    playlist: LocalPlaylist,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    var hovered by remember { mutableStateOf(false) }
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 1.dp)
+            .onPointerEvent(PointerEventType.Enter) { hovered = true }
+            .onPointerEvent(PointerEventType.Exit) { hovered = false },
+        shape = RoundedCornerShape(8.dp),
+        color = when {
+            selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+            hovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+            else -> Color.Transparent
+        },
+        onClick = onClick,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier.size(36.dp).clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Rounded.QueueMusic,
+                    null,
+                    tint = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    playlist.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "${playlist.songs.size} song${if (playlist.songs.size == 1) "" else "s"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -866,7 +1006,7 @@ private fun QueueItem(
 
             // Playing indicator
             if (isPlaying) {
-                Icon(Icons.Rounded.VolumeUp, "Playing", Modifier.size(16.dp),
+                Icon(Icons.AutoMirrored.Rounded.VolumeUp, "Playing", Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(4.dp))
             }
