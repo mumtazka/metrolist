@@ -64,7 +64,7 @@ kotlin {
 
 compose.desktop {
     application {
-        mainClass = "com.metrolist.desktop.MainKt"
+        mainClass = "TestYtKt"
 
         nativeDistributions {
             targetFormats(TargetFormat.Deb, TargetFormat.Exe, TargetFormat.Dmg)

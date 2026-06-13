@@ -21,13 +21,13 @@ private const val MprisBusName = "org.mpris.MediaPlayer2.metrolist"
 private const val MprisObjectPath = "/org/mpris/MediaPlayer2"
 
 @DBusInterfaceName("org.mpris.MediaPlayer2")
-private interface MprisRoot : DBusInterface {
+public interface MprisRoot : DBusInterface {
     fun Raise()
     fun Quit()
 }
 
 @DBusInterfaceName("org.mpris.MediaPlayer2.Player")
-private interface MprisPlayer : DBusInterface {
+interface MprisPlayer : DBusInterface {
     fun Next()
     fun Previous()
     fun Pause()
@@ -149,7 +149,7 @@ class LinuxMprisMediaSession(
         }
     }
 
-    private class MprisService(
+    class MprisService(
         private val playerState: PlayerState,
         private val connection: DBusConnection,
     ) : DBusInterface, Properties, MprisRoot, MprisPlayer {

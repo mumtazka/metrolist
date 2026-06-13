@@ -1,9 +1,17 @@
 import com.metrolist.innertube.YouTube
-import com.metrolist.innertube.models.YouTubeClient
 import kotlinx.coroutines.runBlocking
 
-fun main() = runBlocking {
-    val r = YouTube.player("MiAoetOXKcY", client = YouTubeClient.IOS)
-    val url = r.getOrNull()?.streamingData?.adaptiveFormats?.filter { it.isAudio && it.url != null }?.maxByOrNull { it.bitrate }?.url
-    println("STREAM_URL_START\n$url\nSTREAM_URL_END")
+fun main(args: Array<String>) {
+    runBlocking {
+        val r = YouTube.home()
+        if (r.isSuccess) {
+            println("HOME_SUCCESS: ${r.getOrNull()?.sections?.size} sections found")
+            r.getOrNull()?.sections?.forEach {
+                println("Section: ${it.title}, items: ${it.items.size}")
+            }
+        } else {
+            println("HOME_FAILURE:")
+            r.exceptionOrNull()?.printStackTrace()
+        }
+    }
 }

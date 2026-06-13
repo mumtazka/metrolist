@@ -34,6 +34,11 @@ import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.foundation.Canvas
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
@@ -330,12 +335,19 @@ fun main() = application {
                 color = MaterialTheme.colorScheme.background,
             ) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    MetrolistLauncherIcon(
+        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+        modifier = Modifier
+            .size(48.dp)
+            .align(Alignment.TopStart)
+            .padding(16.dp)
+    )
                     val totalWidth = maxWidth
                     // Responsive breakpoints
                     val showLeftSidebar  = totalWidth >= 600.dp
                     val showRightPanel   = totalWidth >= 1100.dp && playerState.showRightPanel && (playerState.currentSong != null || playerState.showQueue)
-                    val leftWidth        = 260.dp
-                    val rightWidth       = 280.dp
+                    val leftWidth        = 310.dp
+                    val rightWidth       = 310.dp
 
                     Column(modifier = Modifier.fillMaxSize()) {
                         Row(modifier = Modifier.weight(1f)) {
@@ -1239,6 +1251,79 @@ fun TopResultCard(
     }
 }
 
+@Composable
+fun MetrolistLauncherIcon(
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    val path = remember {
+        PathParser().parsePathString(
+            "M9.5,15.5L3.707,21.293C3.317,21.684 3.317,22.317 3.707,22.707L9.293,28.293C9.683,28.684 10.317,28.684 10.707,28.293L16.707,22.293C16.895,22.105 17,21.851 17,21.586V4.468C17,3.578 18.074,3.132 18.705,3.759L28,13"
+        ).toPath()
+    }
+    Canvas(modifier = modifier) {
+        // The viewport of the vector is 30x32.
+        val scaleX = size.width / 30f
+        val scaleY = size.height / 32f
+        
+        // Group transform: scaleX="0.47" scaleY="0.5" translateX="7.8" translateY="8.0"
+        val finalScaleX = scaleX * 0.47f
+        val finalScaleY = scaleY * 0.5f
+        val finalTranslateX = scaleX * 7.8f
+        val finalTranslateY = scaleY * 8.0f
+        
+        drawContext.canvas.save()
+        drawContext.canvas.translate(finalTranslateX, finalTranslateY)
+        drawContext.canvas.scale(finalScaleX, finalScaleY)
+        
+        drawPath(
+            path = path,
+            color = tint,
+            style = Stroke(
+                width = 5.0f,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round
+            )
+        )
+        drawContext.canvas.restore()
+    }
+}
+
+enum class PlaceholderType {
+    SONG, ALBUM, ARTIST, PLAYLIST
+}
+
+@Composable
+fun MusicPlaceholder(size: androidx.compose.ui.unit.Dp, itemType: PlaceholderType = PlaceholderType.SONG) {
+    val cornerRadius = if (itemType == PlaceholderType.ARTIST) size / 2 else size * 0.28f
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(RoundedCornerShape(cornerRadius))
+            .background(MaterialTheme.colorScheme.primaryContainer),
+        contentAlignment = Alignment.Center
+    ) {
+        if (itemType == PlaceholderType.SONG) {
+            MetrolistLauncherIcon(
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(size * 0.55f)
+            )
+        } else {
+            Icon(
+                imageVector = when (itemType) {
+                    PlaceholderType.SONG -> Icons.Rounded.MusicNote // fallback
+                    PlaceholderType.ALBUM -> Icons.Rounded.Album
+                    PlaceholderType.ARTIST -> Icons.Rounded.Person
+                    PlaceholderType.PLAYLIST -> Icons.AutoMirrored.Rounded.QueueMusic
+                },
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(size * 0.5f)
+            )
+        }
+    }
+}
+
 
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -1284,12 +1369,12 @@ fun SearchResultRow(
     ) {
         Row(
             modifier = Modifier.hoverBackground(hovered) { hovered = it }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Thumbnail
             Box(
-                Modifier.size(48.dp).clip(RoundedCornerShape(if (item is ArtistItem) 24.dp else 4.dp)),
+                Modifier.size(56.dp).clip(RoundedCornerShape(if (item is ArtistItem) 28.dp else 16.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 AsyncImage(
@@ -1297,27 +1382,20 @@ fun SearchResultRow(
                     contentDescription = item.title,
                     modifier = Modifier.fillMaxSize(),
                     placeholder = {
-                        Box(
-                            Modifier.fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                when (item) {
-                                    is SongItem -> Icons.Rounded.MusicNote
-                                    is AlbumItem -> Icons.Rounded.Album
-                                    is ArtistItem -> Icons.Rounded.Person
-                                    is PlaylistItem -> Icons.AutoMirrored.Rounded.QueueMusic
-                                    else -> Icons.Rounded.MusicNote
-                                },
-                                null, tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(24.dp),
-                            )
-                        }
+                        MusicPlaceholder(
+                            size = 56.dp,
+                            itemType = when (item) {
+                                is SongItem -> PlaceholderType.SONG
+                                is AlbumItem -> PlaceholderType.ALBUM
+                                is ArtistItem -> PlaceholderType.ARTIST
+                                is PlaylistItem -> PlaceholderType.PLAYLIST
+                                else -> PlaceholderType.SONG
+                            }
+                        )
                     },
                 )
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(16.dp))
             // Title + subtitle
             Column(Modifier.weight(1f)) {
                 Text(item.title, style = MaterialTheme.typography.bodyLarge,
@@ -1492,18 +1570,17 @@ private fun LocalPlaylistSongRow(
                 .fillMaxWidth()
                 .onPointerEvent(PointerEventType.Enter) { hovered = true }
                 .onPointerEvent(PointerEventType.Exit) { hovered = false }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 "${index + 1}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                modifier = Modifier.width(28.dp),
+                modifier = Modifier.width(36.dp),
             )
             Box(
-                Modifier.size(44.dp).clip(RoundedCornerShape(6.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 AsyncImage(
@@ -1511,16 +1588,11 @@ private fun LocalPlaylistSongRow(
                     contentDescription = song.title,
                     modifier = Modifier.fillMaxSize(),
                     placeholder = {
-                        Icon(
-                            Icons.Rounded.MusicNote,
-                            null,
-                            Modifier.size(22.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
-                        )
+                        MusicPlaceholder(size = 56.dp, itemType = PlaceholderType.SONG)
                     },
                 )
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     song.title,
@@ -1612,7 +1684,7 @@ fun PlaylistScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(220.dp)
+                        .height(260.dp)
                         .background(
                             Brush.verticalGradient(
                                 listOf(
@@ -1630,8 +1702,8 @@ fun PlaylistScreen(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(140.dp)
-                                .clip(RoundedCornerShape(18.dp))
+                                .size(160.dp)
+                                .clip(RoundedCornerShape(12.dp))
                                 .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -1730,7 +1802,7 @@ fun PlaylistScreen(
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        contentPadding = PaddingValues(horizontal = 32.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         itemsIndexed(localPlaylist.songs, key = { _, song -> song.id }) { index, song ->
@@ -1857,7 +1929,7 @@ fun PlaylistScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(220.dp)
+                        .height(260.dp)
                         .background(
                             Brush.verticalGradient(
                                 listOf(
@@ -1875,8 +1947,8 @@ fun PlaylistScreen(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(140.dp)
-                                .clip(RoundedCornerShape(18.dp))
+                                .size(160.dp)
+                                .clip(RoundedCornerShape(12.dp))
                                 .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -1967,7 +2039,7 @@ fun PlaylistScreen(
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        contentPadding = PaddingValues(horizontal = 32.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         item {
@@ -2651,7 +2723,7 @@ fun CachedScreen(playerState: PlayerState, viewModel: DesktopViewModel) {
             }
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(horizontal = 32.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 itemsIndexed(sorted) { index, entry ->
@@ -2676,30 +2748,27 @@ fun CachedScreen(playerState: PlayerState, viewModel: DesktopViewModel) {
                                 .fillMaxWidth()
                                 .onPointerEvent(PointerEventType.Enter) { hovered = true }
                                 .onPointerEvent(PointerEventType.Exit)  { hovered = false }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             // Index
                             Text("${index + 1}", style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                modifier = Modifier.width(28.dp))
+                                modifier = Modifier.width(36.dp))
 
                             // Thumbnail
                             Box(
-                                Modifier.size(44.dp).clip(RoundedCornerShape(6.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 if (entry.albumArt != null) {
                                     AsyncImage(url = entry.albumArt, contentDescription = entry.title,
                                         modifier = Modifier.fillMaxSize(),
                                         placeholder = {
-                                            Icon(Icons.Rounded.MusicNote, null, Modifier.size(22.dp),
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                            MusicPlaceholder(size = 56.dp, itemType = PlaceholderType.SONG)
                                         })
                                 } else {
-                                    Icon(Icons.Rounded.MusicNote, null, Modifier.size(22.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                    MusicPlaceholder(size = 56.dp, itemType = PlaceholderType.SONG)
                                 }
                                 // Cloud badge
                                 Box(
@@ -2712,7 +2781,7 @@ fun CachedScreen(playerState: PlayerState, viewModel: DesktopViewModel) {
                                         tint = MaterialTheme.colorScheme.onSecondary)
                                 }
                             }
-                            Spacer(Modifier.width(12.dp))
+                            Spacer(Modifier.width(16.dp))
 
                             // Title + artist
                             Column(Modifier.weight(1f)) {
@@ -2828,7 +2897,7 @@ fun DownloadsScreen(playerState: PlayerState, viewModel: DesktopViewModel) {
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                contentPadding = PaddingValues(horizontal = 32.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 itemsIndexed(songs) { index, song ->
@@ -2847,30 +2916,27 @@ fun DownloadsScreen(playerState: PlayerState, viewModel: DesktopViewModel) {
                                 .fillMaxWidth()
                                 .onPointerEvent(PointerEventType.Enter) { hovered = true }
                                 .onPointerEvent(PointerEventType.Exit)  { hovered = false }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             // Index
                             Text("${index + 1}", style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                modifier = Modifier.width(28.dp))
+                                modifier = Modifier.width(36.dp))
 
                             // Thumbnail
                             Box(
-                                Modifier.size(44.dp).clip(RoundedCornerShape(6.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 if (song.albumArt != null) {
                                     AsyncImage(url = song.albumArt, contentDescription = song.title,
                                         modifier = Modifier.fillMaxSize(),
                                         placeholder = {
-                                            Icon(Icons.Rounded.MusicNote, null, Modifier.size(22.dp),
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                            MusicPlaceholder(size = 56.dp, itemType = PlaceholderType.SONG)
                                         })
                                 } else {
-                                    Icon(Icons.Rounded.MusicNote, null, Modifier.size(22.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                    MusicPlaceholder(size = 56.dp, itemType = PlaceholderType.SONG)
                                 }
                                 // Offline badge
                                 Box(
@@ -2883,7 +2949,7 @@ fun DownloadsScreen(playerState: PlayerState, viewModel: DesktopViewModel) {
                                         tint = MaterialTheme.colorScheme.onTertiary)
                                 }
                             }
-                            Spacer(Modifier.width(12.dp))
+                            Spacer(Modifier.width(16.dp))
 
                             // Title + artist
                             Column(Modifier.weight(1f)) {
