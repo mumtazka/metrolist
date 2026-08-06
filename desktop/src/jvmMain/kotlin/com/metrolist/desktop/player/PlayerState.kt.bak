@@ -12,14 +12,6 @@ import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.innertube.models.YouTubeClient
 import kotlinx.coroutines.*
-import com.metrolist.desktop.cipher.DesktopCipherDeobfuscator
-import com.metrolist.desktop.cipher.FunctionNameExtractor
-import com.metrolist.desktop.cipher.PlayerJsFetcher
-import com.metrolist.desktop.potoken.PoTokenGenerator
-import com.metrolist.desktop.potoken.PoTokenResult
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.util.Collections
 
 data class PlayerSong(
     val id: String,
@@ -68,11 +60,7 @@ class PlayerState {
     private var positionJob: Job? = null
     private var resolveJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private val poTokenGenerator = PoTokenGenerator()
     private val mpv = MpvAudioPlayer()
-    private val httpClient = OkHttpClient.Builder()
-        .proxy(YouTube.proxy)
-        .build()
 
     enum class RepeatMode { OFF, ALL, ONE }
 
@@ -108,12 +96,7 @@ class PlayerState {
 
         mpv.onTrackEnd = { success ->
             if (isLoadingStream) {
-                println("[Player] onTrackEnd fired while loading stream (success=$success) — reporting failure")
-                isLoadingStream = false
-                isPlaying = false
-                if (!success) {
-                    streamError = "Stream playback failed"
-                }
+                println("[Player] onTrackEnd fired while loading stream — ignoring")
             } else {
                 isPlaying = false
                 if (!success && currentPosition < 1000) {
@@ -205,17 +188,12 @@ class PlayerState {
      */
     private suspend fun resolveAndPlay(videoId: String, mediaTitle: String?) {
         println("[Player] Resolving stream for videoId=$videoId (parallel, ${streamClients.size} clients)")
-        println("[Player] Cipher deobfuscator initialized=${DesktopCipherDeobfuscator.isInitialized()}")
-
-        // Generate PoToken lazily so it never blocks direct URL clients.
-        val poTokenDeferred = scope.async(Dispatchers.IO, start = CoroutineStart.LAZY) {
-            getPoToken(videoId)
-        }
+        println("[Player] Cipher deobfuscator initialized=${com.metrolist.desktop.cipher.DesktopCipherDeobfuscator.isInitialized()}")
 
         data class StreamResult(val url: String, val clientName: String, val durationMs: Long?)
 
         val resultChannel = kotlinx.coroutines.channels.Channel<StreamResult>(1)
-        val failureReasons = Collections.synchronizedList(mutableListOf<String>())
+        val failureReasons = mutableListOf<String>()
 
         // Launch all clients concurrently
         val jobs = streamClients.mapIndexed { index, client ->
@@ -229,15 +207,7 @@ class PlayerState {
                 }
                 try {
                     println("[Player] Client ${index + 1}: ${client.clientName}")
-                    // Get signature timestamp and poToken if required by the client
-                    val signatureTimestamp = getSignatureTimestamp(client, videoId)
-                    val playerPoToken = if (client.useWebPoTokens) poTokenDeferred.await()?.playerRequestPoToken else null
-                    val result = YouTube.player(
-                        videoId = videoId,
-                        client = client,
-                        signatureTimestamp = signatureTimestamp,
-                        poToken = if (client.useWebPoTokens) playerPoToken else null
-                    )
+                    val result = YouTube.player(videoId, client = client)
 
                     if (result.isFailure) {
                         val msg = result.exceptionOrNull()?.message ?: "unknown API error"
@@ -270,29 +240,16 @@ class PlayerState {
                         return@launch
                     }
 
-                    suspend fun validateCandidate(candidate: String): String? {
-                        return if (validateStreamUrl(candidate, client.clientName)) candidate else null
-                    }
-
                     // Pick best direct URL first
-                    var streamUrl: String? = null
-                    val directUrl = audioFormats
+                    var streamUrl = audioFormats
                         .filter { it.url != null }
                         .maxByOrNull { it.bitrate }?.url
-                    if (directUrl != null) {
-                        streamUrl = validateCandidate(directUrl)
-                    }
 
                     // Desktop fallback 1: NewPipe per-format deobfuscation
                     if (streamUrl == null) {
                         for (fmt in audioFormats.sortedByDescending { it.bitrate }) {
-                            val candidate = try { NewPipeExtractor.getStreamUrl(fmt, videoId) } catch (_: Exception) { null }
-                            if (candidate != null) {
-                                streamUrl = validateCandidate(candidate)
-                            }
-                            if (streamUrl != null) {
-                                break
-                            }
+                            streamUrl = try { NewPipeExtractor.getStreamUrl(fmt, videoId) } catch (_: Exception) { null }
+                            if (streamUrl != null) break
                         }
                     }
 
@@ -301,19 +258,10 @@ class PlayerState {
                         try {
                             val npUrls = YouTube.getNewPipeStreamUrls(videoId)
                             if (npUrls.isNotEmpty()) {
-                                for (fmt in audioFormats) {
-                                    val candidate = npUrls.find { it.first == fmt.itag }?.second
-                                    if (candidate != null) {
-                                        streamUrl = validateCandidate(candidate)
-                                        if (streamUrl != null) break
-                                    }
-                                }
-                                if (streamUrl == null) {
-                                    for (pair in npUrls) {
-                                        streamUrl = validateCandidate(pair.second)
-                                        if (streamUrl != null) break
-                                    }
-                                }
+                                val match = audioFormats
+                                    .mapNotNull { fmt -> npUrls.find { it.first == fmt.itag }?.second }
+                                    .firstOrNull()
+                                streamUrl = match ?: npUrls.firstOrNull()?.second
                                 if (streamUrl != null) println("[Player] NewPipe global fallback provided a stream URL")
                             }
                         } catch (e: Exception) {
@@ -326,12 +274,10 @@ class PlayerState {
                         for (fmt in audioFormats.sortedByDescending { it.bitrate }) {
                             if (fmt.signatureCipher == null) continue
                             val deobfuscated = try {
-                                DesktopCipherDeobfuscator.deobfuscateFormat(fmt, videoId)
+                                com.metrolist.desktop.cipher.DesktopCipherDeobfuscator.deobfuscateFormat(fmt, videoId)
                             } catch (_: Exception) { null }
                             if (deobfuscated != null) {
-                                streamUrl = validateCandidate(deobfuscated)
-                            }
-                            if (streamUrl != null) {
+                                streamUrl = deobfuscated
                                 break
                             }
                         }
@@ -377,53 +323,11 @@ class PlayerState {
             return
         }
 
-        // Apply n-transform to the stream URL (required for web-based clients to avoid 403)
-        var finalUrl = winner.url
-        val isWebClient = winner.clientName in listOf("WEB", "WEB_REMIX", "WEB_CREATOR", "TVHTML5", "TVHTML5_SIMPLY_EMBEDDED_PLAYER")
-        if (isWebClient) {
-            try {
-                println("[Player] Applying n-transform to stream URL (client=${winner.clientName})...")
-                finalUrl = DesktopCipherDeobfuscator.transformN(finalUrl)
-            } catch (e: Exception) {
-                println("[Player] N-transform failed: ${e.message}")
-            }
-        }
-
-        // Append pot= parameter with streaming data PoToken
-        if (isWebClient) {
-            val poTokenResult = try {
-                poTokenDeferred.await()
-            } catch (e: Exception) {
-                println("[Player] PoToken unavailable for stream URL: ${e.message}")
-                null
-            }
-
-            val streamingDataPoToken = poTokenResult?.streamingDataPoToken
-            if (streamingDataPoToken != null) {
-                val separator = if ("?" in finalUrl) "&" else "?"
-                finalUrl = "${finalUrl}${separator}pot=${java.net.URLEncoder.encode(streamingDataPoToken, "UTF-8")}"
-                println("[Player] Appended streaming PoToken to URL")
-            }
-        }
-
         winner.durationMs?.let { duration = it }
-        println("[Player] Playing URL with client=${winner.clientName} (length=${finalUrl.take(80)}...)")
-        mpv.play(finalUrl, winner.clientName, mediaTitle)
+        mpv.play(winner.url, winner.clientName, mediaTitle)
         mpv.setVolume((volume * 100).toInt())
         // isPlaying and isLoadingStream will be set by mpv.onPlaybackStarted
         // once mpv actually starts outputting audio
-
-        // Safety timeout: if mpv doesn't start within 30s, report error
-        scope.launch {
-            kotlinx.coroutines.delay(30_000)
-            if (isLoadingStream) {
-                println("[Player] Playback timeout: mpv did not start within 30s")
-                mpv.stop()
-                isLoadingStream = false
-                isPlaying = false
-                streamError = "Playback timed out — stream may be unavailable"
-            }
-        }
 
         // Background-cache the stream so next play is instant / offline
         currentSong?.let { song ->
@@ -436,10 +340,6 @@ class PlayerState {
                 streamUrl  = winner.url,
                 clientName = winner.clientName,
             )
-        }
-
-        if (poTokenDeferred.isActive) {
-            poTokenDeferred.cancel()
         }
     }
 
@@ -604,98 +504,6 @@ class PlayerState {
                 currentLyricIndex = idx
             }
         }
-    }
-    /**
-     * Attempts to get a signature timestamp for the given videoId if the client requires it.
-     * Returns null if timestamp cannot be obtained or client doesn't require it.
-     */
-    private suspend fun getSignatureTimestamp(client: YouTubeClient, videoId: String): Int? {
-        if (!client.useSignatureTimestamp) {
-            return null
-        }
-        
-        // Try to get from cipher deobfuscator if initialized
-        val cipher = com.metrolist.desktop.cipher.DesktopCipherDeobfuscator
-        if (cipher.isInitialized()) {
-            // The cipher deobfuscator already analyzed player.js during initialization
-            // We could expose the signature timestamp from it, but for now let's extract it fresh
-            // to avoid modifying the cipher deobfuscator interface
-        }
-        
-        // Fallback: extract from player.js directly
-        return try {
-            val playerJs = com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = false)?.first
-                    ?: com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = true)?.first
-                    ?: return null
-            val hash = com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = false)?.second
-                    ?: com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = true)?.second
-                    ?: return null
-            com.metrolist.desktop.cipher.FunctionNameExtractor
-                .analyzePlayerJs(playerJs, knownHash = hash)
-                    .signatureTimestamp
-        } catch (e: Exception) {
-            println("[Player] Failed to extract signature timestamp: ${e.message}")
-            null
-        }
-    }
-
-    /**
-     * Attempts to get both player and streaming poTokens for the given videoId.
-     * Returns [PoTokenResult] with both tokens, or null if generation fails.
-     */
-    private suspend fun getPoToken(videoId: String): PoTokenResult? {
-        val sessionId = com.metrolist.innertube.YouTube.dataSyncId
-            ?: com.metrolist.innertube.YouTube.visitorData
-            ?: run {
-                println("[Player] No session ID available for PoToken generation")
-                return null
-            }
-        return try {
-            poTokenGenerator.getWebClientPoToken(videoId, sessionId)
-        } catch (e: Exception) {
-            println("[Player] Failed to get poToken: ${e.message}")
-            null
-        }
-    }
-
-    private suspend fun validateStreamUrl(url: String, clientName: String): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                val requestBuilder = Request.Builder()
-                    .url(url)
-                    .get()
-                    .header("User-Agent", playbackUserAgent(clientName))
-
-                if (clientName.contains("WEB")) {
-                    requestBuilder.header("Referer", "https://music.youtube.com/")
-                    requestBuilder.header("Origin", "https://music.youtube.com")
-                }
-
-                val cookie = com.metrolist.innertube.YouTube.cookie
-                if (!cookie.isNullOrBlank()) {
-                    requestBuilder.header("Cookie", cookie)
-                }
-
-                httpClient.newCall(requestBuilder.build()).execute().use { response ->
-                    val ok = response.isSuccessful
-                    if (!ok) {
-                        println("[Player] URL validation failed for $clientName (${response.code})")
-                    }
-                    ok
-                }
-            } catch (e: Exception) {
-                println("[Player] URL validation exception for $clientName: ${e.message}")
-                false
-            }
-        }
-    }
-
-    private fun playbackUserAgent(clientName: String): String = when {
-        clientName.contains("ANDROID") || clientName.contains("VR") ->
-            "com.google.android.youtube/21.03.38 (Linux; U; Android 14) gzip"
-        clientName.contains("IOS") || clientName.contains("IPAD") ->
-            "com.google.ios.youtube/21.03.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X;)"
-        else -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"
     }
 
     private fun stopPositionUpdates() {

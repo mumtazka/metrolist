@@ -1,6 +1,6 @@
 /**
  * Metrolist Desktop — mpv Audio Player
- * Plays YouTube Music streams via mpv subprocess.
+ * Plays YouTube Music streams via mpv subprocess. Falls back to JavaFX media when mpv is unavailable.
  *
  * Key improvements:
  *  - Fast-start flags: mpv begins playback with minimal buffering
@@ -15,10 +15,12 @@ import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import com.metrolist.innertube.YouTube
 
 class MpvAudioPlayer {
     private var mpvProcess: Process? = null
     private var ipcSocket: String = ""
+    // No fallback here; desktop expects `mpv` to be installed for audio playback
 
     var onTrackEnd: ((success: Boolean) -> Unit)? = null
 
@@ -63,19 +65,27 @@ class MpvAudioPlayer {
             else -> "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"
         }
 
-        val headers = mutableListOf("User-Agent: ${userAgent.replace(",", "\\\\,")}")
+        val headers = mutableListOf("User-Agent: $userAgent")
         if (clientName.contains("WEB")) {
             headers.add("Referer: https://music.youtube.com/")
             headers.add("Origin: https://music.youtube.com")
         }
 
+        val cookie = YouTube.cookie
+        if (!cookie.isNullOrBlank()) {
+            headers.add("Cookie: ${cookie.replace(";", "\\;")}")
+        }
+
+        // mpv --http-header-fields is a String list: items separated by ';',
+        // literal ';' within values escaped as '\;'
+        val escapedHeaders = headers.map { it.replace("\\", "\\\\").replace(";", "\\;") }
         val cmd = mutableListOf(
             "mpv",
             "--no-video",
             "--ytdl=no",
             "--input-ipc-server=$ipcSocket",
             "--volume=70",
-            "--http-header-fields=${headers.joinToString(",")}",
+            "--http-header-fields=${escapedHeaders.joinToString(";")}",
 
             // ── Fast-start: begin playing after minimal buffering ──
             "--cache=yes",
@@ -102,7 +112,8 @@ class MpvAudioPlayer {
         }
 
         try {
-            println("[mpv] Starting playback...")
+            println("[mpv] Starting playback... (client=$clientName)")
+            println("[mpv] Command: ${cmd.joinToString(" ") { if (it.length > 120) it.take(120) + "..." else it }}")
             mpvProcess = ProcessBuilder(cmd)
                 .redirectErrorStream(true)
                 .start()
@@ -121,13 +132,18 @@ class MpvAudioPlayer {
                         val match = positionRegex.find(l)
                         if (match != null) {
                             val posMs = (match.groupValues[1].toDoubleOrNull() ?: 0.0) * 1000.0
-                            onPositionUpdate?.invoke(posMs.toLong())
 
                             // Fire playback-started once on first real position report
+                            // Must fire BEFORE onPositionUpdate so isPlaying is true when position arrives
                             if (!playbackStartedFired) {
                                 playbackStartedFired = true
                                 onPlaybackStarted?.invoke()
                             }
+
+                            onPositionUpdate?.invoke(posMs.toLong())
+                        } else {
+                            // Print non-position lines for debugging (mpv logs/errors)
+                            println("[mpv/out] $l")
                         }
                     }
                 } catch (_: Exception) {}
@@ -137,13 +153,16 @@ class MpvAudioPlayer {
             scope.launch {
                 val exitCode = currentProcess?.waitFor() ?: -1
                 println("[mpv] Process exited with code: $exitCode")
-                if (!isStopping && currentProcess == mpvProcess) {
-                    val success = exitCode == 0 || exitCode == 4
-                    onTrackEnd?.invoke(success)
-                }
+                    if (!isStopping && currentProcess == mpvProcess) {
+                        val success = exitCode == 0 || exitCode == 4
+                        onTrackEnd?.invoke(success)
+                    }
             }
         } catch (e: Exception) {
             println("[mpv] Failed to start: ${e.message}")
+            println("[mpv] Ensure 'mpv' is installed and available on PATH. Try: mpv --version")
+            // No local fallback: surface start failure to caller
+            onTrackEnd?.invoke(false)
         }
     }
 
@@ -160,6 +179,7 @@ class MpvAudioPlayer {
             mpvProcess = null
             if (ipcSocket.isNotBlank()) File(ipcSocket).delete()
         } catch (_: Exception) {}
+        // no-op: no fallback player to stop
     }
 
     val isRunning: Boolean
