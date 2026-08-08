@@ -94,7 +94,7 @@ fun AccountSettings(
     val isLoggedIn = remember(innerTubeCookie) {
         "SAPISID" in parseCookieString(innerTubeCookie)
     }
-    val (useLoginForBrowse, onUseLoginForBrowseChange) = rememberPreference(UseLoginForBrowse, true)
+    val (useLoginForBrowse, onUseLoginForBrowseChange) = rememberPreference(UseLoginForBrowse, false)
     val (ytmSync, onYtmSyncChange) = rememberPreference(YtmSyncKey, true)
 
     val homeViewModel: HomeViewModel = hiltViewModel()
@@ -321,7 +321,7 @@ fun AccountSettings(
                     icon = painterResource(R.drawable.cached),
                     trailingContent = {
                         Switch(
-                            enabled = isLoggedIn,
+                            enabled = true,
                             checked = useLoginForBrowse,
                             onCheckedChange = {
                                 YouTube.useLoginForBrowse = it
@@ -338,7 +338,7 @@ fun AccountSettings(
                             }
                         )
                     },
-                    enabled = isLoggedIn
+                    enabled = true
                 ),
                 Material3SettingsItem(
                     title = { Text(stringResource(R.string.yt_sync)) },

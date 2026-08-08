@@ -117,6 +117,12 @@ class NewPipeUtils(
             // Don't print stack trace - caller handles errors
             null
         }
+
+    suspend fun getStreamUrlWithDesktopFallback(
+        format: PlayerResponse.StreamingData.Format,
+        videoId: String,
+    ): String? =
+        getStreamUrl(format, videoId)
 }
 
 object NewPipeExtractor {

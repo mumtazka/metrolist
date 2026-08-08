@@ -24,8 +24,8 @@ object PlayerJsFetcher {
         .proxy(YouTube.proxy)
         .build()
 
-    // Regex to extract player hash from iframe_api response
-    private val PLAYER_HASH_REGEX = Regex("""\\?/s\\?/player\\?/([a-zA-Z0-9_-]+)\\?/""")
+    // iframe_api embeds the active player path as /s/player/<hash>/...
+    private val PLAYER_HASH_REGEX = Regex("""/s/player/([a-zA-Z0-9_-]+)/""")
 
     private fun getCacheDir(): File = File(CipherDeobfuscator.appContext.filesDir, "cipher_cache")
 
@@ -52,7 +52,7 @@ object PlayerJsFetcher {
 
             // Check cache first (unless forced refresh)
             if (!forceRefresh) {
-                val cached = readFromCache()
+                val cached = readFromCache(allowExpired = false)
                 if (cached != null) {
                     Timber.tag(TAG).d("=== CACHE HIT ===")
                     Timber.tag(TAG).d("Using cached player JS (hash=${cached.second}, length=${cached.first.length})")
@@ -66,6 +66,11 @@ object PlayerJsFetcher {
             val hash = fetchPlayerHash()
             if (hash == null) {
                 Timber.tag(TAG).e("Failed to extract player hash from iframe_api")
+                val staleCached = readFromCache(allowExpired = true)
+                if (staleCached != null) {
+                    Timber.tag(TAG).w("Using stale cached player JS as fallback (hash=${staleCached.second})")
+                    return@withContext staleCached
+                }
                 return@withContext null
             }
             Timber.tag(TAG).d("Extracted player hash: $hash")
@@ -75,6 +80,11 @@ object PlayerJsFetcher {
             val playerJs = downloadPlayerJs(hash)
             if (playerJs == null) {
                 Timber.tag(TAG).e("Failed to download player JS for hash=$hash")
+                val staleCached = readFromCache(allowExpired = true)
+                if (staleCached != null) {
+                    Timber.tag(TAG).w("Using stale cached player JS as fallback (hash=${staleCached.second})")
+                    return@withContext staleCached
+                }
                 return@withContext null
             }
 
@@ -115,7 +125,7 @@ object PlayerJsFetcher {
         }
     }
 
-    private fun readFromCache(): Pair<String, String>? {
+    private fun readFromCache(allowExpired: Boolean): Pair<String, String>? {
         Timber.tag(TAG).d("Checking cache...")
         try {
             val hashFile = getHashFile()
@@ -141,8 +151,8 @@ object PlayerJsFetcher {
             val ageHours = ageMs / (1000 * 60 * 60)
             Timber.tag(TAG).d("Cache age: ${ageHours}h (TTL: ${CACHE_TTL_MS / (1000 * 60 * 60)}h)")
 
-            // Check TTL
-            if (ageMs > CACHE_TTL_MS) {
+            // Check TTL unless we are falling back after a failed refresh.
+            if (!allowExpired && ageMs > CACHE_TTL_MS) {
                 Timber.tag(TAG).d("Cache expired (hash=$hash, age=${ageHours}h)")
                 return null
             }

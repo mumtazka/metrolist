@@ -97,7 +97,12 @@ typealias Screen = NavScreen
 // Entry Point
 // ============================================================
 
-fun main() = application {
+fun main(args: Array<String>) {
+    if (AppUpdater.handleCommandLineArguments(args)) {
+        return
+    }
+
+    application {
     // Start maximized — works properly on tiling WMs like Hyprland
     val windowState = rememberWindowState(
         placement = WindowPlacement.Maximized,
@@ -476,6 +481,7 @@ fun main() = application {
             )
         }
     }
+}
 }
 
 
@@ -2458,6 +2464,18 @@ fun SettingsScreen(
                             Text(
                                 "${(downloadProgress * 100).toInt()}%",
                                 style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        UpdateDownloadState.APPLYING -> {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Text(
+                                "Applying update...",
+                                style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }

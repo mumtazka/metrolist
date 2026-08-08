@@ -88,6 +88,23 @@ jobs:
           chmod +x gradlew
           ./gradlew :desktop:packageDeb --no-configuration-cache --warning-mode summary
 
+      - name: Build Linux portable app image
+        run: |
+          chmod +x gradlew
+          ./gradlew :desktop:createDistributable --no-configuration-cache --warning-mode summary
+
+      - name: Package Linux portable zip
+        run: |
+          mkdir -p release-output
+          PORTABLE_DIR=$(find desktop/build/compose/binaries -type d -name "Metrolist" | head -1)
+          if [ -n "$PORTABLE_DIR" ]; then
+            jar --create --file release-output/Metrolist-Linux-Portable.zip -C "$PORTABLE_DIR" .
+          else
+            echo "ERROR: No Linux portable app image found!"
+            find desktop/build/compose/binaries -type d 2>/dev/null || true
+            exit 1
+          fi
+
       - name: Find and Rename DEB
         run: |
           mkdir -p release-output
@@ -105,6 +122,13 @@ jobs:
         with:
           name: linux-deb
           path: release-output/Metrolist-Linux.deb
+          if-no-files-found: error
+
+      - name: Upload Linux Portable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-portable-zip
+          path: release-output/Metrolist-Linux-Portable.zip
           if-no-files-found: error
 
   # ─── Build Windows .exe (on Windows) ───
@@ -136,6 +160,22 @@ jobs:
       - name: Build Windows EXE
         run: ./gradlew :desktop:packageExe --no-configuration-cache --warning-mode summary
 
+      - name: Build Windows portable app image
+        run: ./gradlew :desktop:createDistributable --no-configuration-cache --warning-mode summary
+
+      - name: Package Windows portable zip
+        shell: bash
+        run: |
+          mkdir -p release-output
+          PORTABLE_DIR=$(find desktop/build/compose/binaries -type d -name "Metrolist" | head -1)
+          if [ -n "$PORTABLE_DIR" ]; then
+            jar --create --file release-output/Metrolist-Windows-Portable.zip -C "$PORTABLE_DIR" .
+          else
+            echo "ERROR: No Windows portable app image found!"
+            find desktop/build/compose/binaries -type d 2>/dev/null || true
+            exit 1
+          fi
+
       - name: Find and Rename EXE
         shell: bash
         run: |
@@ -154,6 +194,13 @@ jobs:
         with:
           name: windows-exe
           path: release-output/Metrolist-Windows.exe
+          if-no-files-found: error
+
+      - name: Upload Windows Portable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable-zip
+          path: release-output/Metrolist-Windows-Portable.zip
           if-no-files-found: error
 
   # ─── Combine all artifacts into a single GitHub Release ───
@@ -177,12 +224,12 @@ jobs:
       - name: Organize release files
         run: |
           mkdir -p release-files
-          find all-artifacts -type f \( -name "*.apk" -o -name "*.deb" -o -name "*.exe" \) -exec cp {} release-files/ \;
+          find all-artifacts -type f \( -name "*.apk" -o -name "*.deb" -o -name "*.exe" -o -name "*.zip" \) -exec cp {} release-files/ \;
           echo "Files ready for release:"
           ls -lh release-files/
           FILE_COUNT=$(ls release-files/ | wc -l)
-          if [ "$FILE_COUNT" -lt 3 ]; then
-            echo "WARNING: Expected 3 files but found $FILE_COUNT"
+          if [ "$FILE_COUNT" -lt 5 ]; then
+            echo "WARNING: Expected 5 files but found $FILE_COUNT"
           fi
 
       - name: Delete existing release with same tag (if any)

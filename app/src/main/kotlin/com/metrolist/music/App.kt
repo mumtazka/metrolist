@@ -134,7 +134,8 @@ class App :
             }
         }
 
-        YouTube.useLoginForBrowse = settings[UseLoginForBrowse] ?: true
+        val hasSavedLogin = !settings[InnerTubeCookieKey].isNullOrBlank()
+        YouTube.useLoginForBrowse = settings[UseLoginForBrowse] ?: hasSavedLogin
 
         val channel =
             NotificationChannel(
