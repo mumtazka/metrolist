@@ -21,6 +21,20 @@ import com.materialkolor.rememberDynamicColorScheme
 val DefaultThemeColor = Color(0xFFED5564)
 
 // ============================================================
+// Pure black AMOLED enhancement for desktop
+// ============================================================
+fun ColorScheme.pureBlack(apply: Boolean): ColorScheme =
+    if (apply) copy(
+        surface = Color.Black,
+        background = Color.Black,
+        surfaceContainerLowest = Color.Black,
+        surfaceContainerLow = Color(0xFF0A0A0A),
+        surfaceContainer = Color(0xFF121212),
+        surfaceContainerHigh = Color(0xFF1E1E1E),
+        surfaceContainerHighest = Color(0xFF282828),
+    ) else this
+
+// ============================================================
 // MetrolistTheme — mirrors the mobile Theme.kt
 // ============================================================
 
@@ -45,8 +59,17 @@ fun MetrolistTheme(
         style = PaletteStyle.TonalSpot,
     )
 
+    val colorScheme = remember(baseColorScheme, pureBlack, darkTheme) {
+        if (darkTheme && pureBlack) {
+            baseColorScheme.pureBlack(true)
+        } else {
+            baseColorScheme
+        }
+    }
+
     MaterialTheme(
-        colorScheme = baseColorScheme,
+        colorScheme = colorScheme,
+        typography = AppTypography,
         content = content,
     )
 }

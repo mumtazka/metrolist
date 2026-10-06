@@ -16,9 +16,7 @@ import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.QueueMusic
-import androidx.compose.material.icons.automirrored.rounded.Login
-import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.automirrored.rounded.*
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,6 +25,7 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.shadow
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -34,6 +33,7 @@ import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
@@ -52,6 +52,7 @@ import com.metrolist.desktop.data.DESKTOP_APP_VERSION
 import com.metrolist.desktop.data.UpdateDownloadState
 import com.metrolist.desktop.player.LyricLine
 import com.metrolist.desktop.player.PlayerState
+import com.metrolist.desktop.player.PlayerSong
 import com.metrolist.desktop.search.SearchRanker
 import com.metrolist.desktop.ui.theme.*
 import com.metrolist.desktop.viewmodel.DesktopViewModel
@@ -67,9 +68,19 @@ import com.metrolist.desktop.ui.AsyncImage
 import com.metrolist.desktop.ui.AddToPlaylistButton
 import com.metrolist.desktop.ui.LeftSidebarPanel
 import com.metrolist.desktop.ui.LocalPlaylistNameDialog
+import com.metrolist.desktop.ui.ExternalPlaylistImportDialog
 import com.metrolist.desktop.ui.NavScreen
 import com.metrolist.desktop.ui.NowPlayingPanel
 import com.metrolist.desktop.ui.TopBar
+import com.metrolist.desktop.ui.component.PlayingIndicator
+import com.metrolist.desktop.ui.component.FilterChipsRow
+import com.metrolist.desktop.ui.component.Material3SettingsGroup
+import com.metrolist.desktop.ui.component.Material3SettingsGroupContainer
+import com.metrolist.desktop.ui.component.Material3SettingsCard
+import com.metrolist.desktop.ui.component.Material3SettingsRow
+import com.metrolist.desktop.ui.component.Material3SettingsItem
+import com.metrolist.desktop.ui.component.PlaylistCollageThumbnail
+import com.metrolist.desktop.ui.component.settingsCardShape
 import java.awt.Desktop as AwtDesktop
 import java.awt.Dimension
 import java.net.URI
@@ -157,6 +168,7 @@ fun main() = application {
         var currentScreen by remember { mutableStateOf(Screen.HOME) }
         var searchQuery by remember { mutableStateOf("") }
         var showCreateLocalPlaylistDialog by remember { mutableStateOf(false) }
+        var showExternalPlaylistImportDialog by remember { mutableStateOf(false) }
 
         fun openPlaylistScreen(playlistId: String) {
             currentScreen = Screen.PLAYLIST
@@ -334,7 +346,12 @@ fun main() = application {
                     // Responsive breakpoints
                     val showLeftSidebar  = totalWidth >= 600.dp
                     val showRightPanel   = totalWidth >= 1100.dp && playerState.showRightPanel && (playerState.currentSong != null || playerState.showQueue)
-                    val leftWidth        = 260.dp
+                    val leftWidth        = when {
+                        totalWidth >= 1600.dp -> 300.dp  // Full HD maximized (1920x1080)
+                        totalWidth >= 1200.dp -> 285.dp  // Standard desktop / 1080p windowed
+                        totalWidth >= 900.dp  -> 265.dp  // Medium window
+                        else                  -> 245.dp  // Compact window
+                    }
                     val rightWidth       = 280.dp
 
                     Column(modifier = Modifier.fillMaxSize()) {
@@ -358,6 +375,7 @@ fun main() = application {
                                         currentScreen = Screen.PLAYLIST
                                         showCreateLocalPlaylistDialog = true
                                     },
+                                    onImportPlaylist = { showExternalPlaylistImportDialog = true },
                                     modifier = Modifier.width(leftWidth),
                                 )
                             }
@@ -473,6 +491,12 @@ fun main() = application {
                     showCreateLocalPlaylistDialog = false
                     playlist?.let { openLocalPlaylistScreen(it.id) }
                 },
+            )
+        }
+        if (showExternalPlaylistImportDialog) {
+            ExternalPlaylistImportDialog(
+                viewModel = viewModel,
+                onDismiss = { showExternalPlaylistImportDialog = false },
             )
         }
     }
@@ -628,6 +652,7 @@ fun HomeSectionView(
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun YTItemCard(
     item: YTItem,
@@ -637,13 +662,22 @@ fun YTItemCard(
 ) {
     var hovered by remember { mutableStateOf(false) }
     val thumbnailUrl = item.thumbnail
+    val isPlaying = item is SongItem && playerState.currentSong?.id == item.id && playerState.isPlaying
+
+    val cardBg by animateColorAsState(
+        targetValue = when {
+            isPlaying -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+            hovered -> MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f)
+            else -> Color.Transparent
+        },
+        animationSpec = tween(150),
+    )
 
     Surface(
-        modifier = Modifier.width(170.dp),
-        shape = RoundedCornerShape(12.dp),
-        color = Color.Transparent,
+        modifier = Modifier.width(172.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = cardBg,
         onClick = {
-            // For songs, start playback simulation
             when (item) {
                 is SongItem -> {
                     if (contextSongs.isNotEmpty()) {
@@ -660,13 +694,19 @@ fun YTItemCard(
         },
     ) {
         Column(
-            modifier = Modifier.hoverBackground(hovered) { hovered = it }.padding(8.dp),
+            modifier = Modifier
+                .onPointerEvent(PointerEventType.Enter) { hovered = true }
+                .onPointerEvent(PointerEventType.Exit) { hovered = false }
+                .padding(10.dp),
         ) {
             // Thumbnail
+            val isArtist = item is ArtistItem
             Box(
-                modifier = Modifier.fillMaxWidth().aspectRatio(1f).clip(
-                    if (item is ArtistItem) CircleShape else RoundedCornerShape(8.dp)
-                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .clip(if (isArtist) CircleShape else RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                 contentAlignment = Alignment.Center,
             ) {
                 AsyncImage(
@@ -688,17 +728,35 @@ fun YTItemCard(
                                     else -> Icons.Rounded.MusicNote
                                 },
                                 item.title,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.size(40.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                                modifier = Modifier.size(42.dp),
                             )
                         }
                     },
                 )
-                // Play button overlay
-                if (hovered && item is SongItem) {
+
+                // Playing overlay
+                if (isPlaying) {
                     Box(
-                        Modifier.align(Alignment.BottomEnd).padding(8.dp).size(40.dp)
-                            .clip(CircleShape).background(MaterialTheme.colorScheme.primary)
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.4f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        PlayingIndicator(
+                            color = Color.White,
+                            modifier = Modifier.height(20.dp),
+                        )
+                    }
+                } else if (hovered && item is SongItem) {
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                            .size(42.dp)
+                            .shadow(6.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
                             .clickable {
                                 if (contextSongs.isNotEmpty()) {
                                     val queue = contextSongs.map { s -> com.metrolist.desktop.player.PlayerSong(s.id, s.title, s.artists.joinToString { a -> a.name }, s.thumbnail, (s.duration ?: 210) * 1000L) }
@@ -710,26 +768,41 @@ fun YTItemCard(
                             },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(Icons.Rounded.PlayArrow, "Play",
+                        Icon(
+                            Icons.Rounded.PlayArrow, "Play",
                             tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(24.dp))
+                            modifier = Modifier.size(24.dp),
+                        )
                     }
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            Text(item.title, style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+
+            Spacer(Modifier.height(10.dp))
+            Text(
+                item.title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.SemiBold,
+                color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+
             // Subtitle based on type
             val subtitle = when (item) {
                 is SongItem -> item.artists.joinToString { it.name }
-                is AlbumItem -> item.artists?.joinToString { it.name } ?: ""
+                is AlbumItem -> item.artists?.joinToString { it.name } ?: "Album"
                 is ArtistItem -> "Artist"
-                is PlaylistItem -> item.author?.name ?: ""
+                is PlaylistItem -> item.author?.name ?: "Playlist"
                 else -> ""
             }
             if (subtitle.isNotBlank()) {
-                Text(subtitle, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -837,13 +910,31 @@ fun SearchScreen(
                 }
             }
             else -> {
+                var selectedFilter by remember(query) { mutableStateOf<String?>(null) }
+
                 Text("Results for \"$query\"", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(10.dp))
+
+                FilterChipsRow(
+                    chips = listOf("Songs", "Albums", "Artists", "Playlists"),
+                    selectedChip = selectedFilter,
+                    onChipSelected = { selectedFilter = it },
+                    chipLabel = { it },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                )
 
                 val allResults = viewModel.searchResults
                 val topResult  = SearchRanker.pickTopResult(allResults, query, viewModel.likedSongIds)
                 val restResults = allResults.filter { it !== topResult }
                 val searchSongs = allResults.filterIsInstance<SongItem>()
+
+                val filteredResults = when (selectedFilter) {
+                    "Songs" -> restResults.filterIsInstance<SongItem>()
+                    "Albums" -> restResults.filterIsInstance<AlbumItem>()
+                    "Artists" -> restResults.filterIsInstance<ArtistItem>()
+                    "Playlists" -> restResults.filterIsInstance<PlaylistItem>()
+                    else -> restResults
+                }
 
                 BoxWithConstraints(Modifier.fillMaxSize()) {
                     val isWide = maxWidth >= 800.dp
@@ -851,7 +942,7 @@ fun SearchScreen(
                         // ── Wide layout: Top Result card left, list right ──
                         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                             // Left: Top Result card
-                            if (topResult != null) {
+                            if (topResult != null && selectedFilter == null) {
                                 TopResultCard(
                                     item = topResult,
                                     playerState = playerState,
@@ -862,7 +953,7 @@ fun SearchScreen(
                                 )
                             }
                             LazyColumn(Modifier.weight(1f)) {
-                                items(restResults, key = { it.id }) { item ->
+                                items(filteredResults, key = { it.id }) { item ->
                                     SearchResultRow(item, playerState, viewModel, searchSongs, onOpenPlaylist)
                                 }
                             }
@@ -870,7 +961,7 @@ fun SearchScreen(
                     } else {
                         // ── Narrow layout: stacked ──
                         LazyColumn(Modifier.fillMaxSize()) {
-                            if (topResult != null) {
+                            if (topResult != null && selectedFilter == null) {
                                 item {
                                     TopResultCard(
                                         item = topResult,
@@ -883,7 +974,7 @@ fun SearchScreen(
                                     Spacer(Modifier.height(16.dp))
                                 }
                             }
-                            items(restResults, key = { it.id }) { item ->
+                            items(filteredResults, key = { it.id }) { item ->
                                 SearchResultRow(item, playerState, viewModel, searchSongs, onOpenPlaylist)
                             }
                         }
@@ -1262,10 +1353,20 @@ fun SearchResultRow(
         )
     }
 
+    val isPlaying = item is SongItem && playerState.currentSong?.id == item.id && playerState.isPlaying
+    val animatedBg by animateColorAsState(
+        targetValue = when {
+            isPlaying -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+            hovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+            else -> Color.Transparent
+        },
+        animationSpec = tween(150),
+    )
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = if (hovered) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
+        shape = RoundedCornerShape(10.dp),
+        color = animatedBg,
         onClick = {
             when (item) {
                 is SongItem -> {
@@ -1283,13 +1384,15 @@ fun SearchResultRow(
         },
     ) {
         Row(
-            modifier = Modifier.hoverBackground(hovered) { hovered = it }
+            modifier = Modifier
+                .onPointerEvent(PointerEventType.Enter) { hovered = true }
+                .onPointerEvent(PointerEventType.Exit) { hovered = false }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Thumbnail
             Box(
-                Modifier.size(48.dp).clip(RoundedCornerShape(if (item is ArtistItem) 24.dp else 4.dp)),
+                Modifier.size(48.dp).clip(if (item is ArtistItem) CircleShape else RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 AsyncImage(
@@ -1316,12 +1419,32 @@ fun SearchResultRow(
                         }
                     },
                 )
+
+                if (isPlaying) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.45f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        PlayingIndicator(
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.height(18.dp),
+                        )
+                    }
+                }
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(14.dp))
             // Title + subtitle
             Column(Modifier.weight(1f)) {
-                Text(item.title, style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    item.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 val subtitle = when (item) {
                     is SongItem -> "Song · ${item.artists.joinToString { it.name }}"
                     is AlbumItem -> "Album · ${item.artists?.joinToString { it.name } ?: ""}"
@@ -1480,11 +1603,21 @@ private fun LocalPlaylistSongRow(
     var hovered by remember { mutableStateOf(false) }
     val dlState = com.metrolist.desktop.data.DownloadManager.downloads[song.id]
     val dlProgress = com.metrolist.desktop.data.DownloadManager.progress[song.id] ?: 0f
+    val isPlaying = playerState.currentSong?.id == song.id && playerState.isPlaying
+
+    val animatedBg by animateColorAsState(
+        targetValue = when {
+            isPlaying -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+            hovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+            else -> Color.Transparent
+        },
+        animationSpec = tween(150),
+    )
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = if (hovered) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
+        shape = RoundedCornerShape(10.dp),
+        color = animatedBg,
         onClick = { playerState.playQueue(playlistSongs, index) },
     ) {
         Row(
@@ -1498,11 +1631,12 @@ private fun LocalPlaylistSongRow(
             Text(
                 "${index + 1}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Normal,
                 modifier = Modifier.width(28.dp),
             )
             Box(
-                Modifier.size(44.dp).clip(RoundedCornerShape(6.dp))
+                Modifier.size(44.dp).clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                 contentAlignment = Alignment.Center,
             ) {
@@ -1519,13 +1653,28 @@ private fun LocalPlaylistSongRow(
                         )
                     },
                 )
+
+                if (isPlaying) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.45f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        PlayingIndicator(
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.height(18.dp),
+                        )
+                    }
+                }
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     song.title,
                     style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1628,27 +1777,12 @@ fun PlaylistScreen(
                         verticalAlignment = Alignment.Bottom,
                         horizontalArrangement = Arrangement.spacedBy(20.dp),
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(140.dp)
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            AsyncImage(
-                                url = localPlaylist.songs.firstOrNull()?.albumArt,
-                                contentDescription = localPlaylist.name,
-                                modifier = Modifier.fillMaxSize(),
-                                placeholder = {
-                                    Icon(
-                                        Icons.AutoMirrored.Rounded.QueueMusic,
-                                        null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
-                                        modifier = Modifier.size(52.dp),
-                                    )
-                                },
-                            )
-                        }
+                        PlaylistCollageThumbnail(
+                            playlist = localPlaylist,
+                            modifier = Modifier.size(140.dp),
+                            shape = RoundedCornerShape(18.dp),
+                            iconSize = 52.dp,
+                        )
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(
                                 "Your playlist",
@@ -2039,39 +2173,359 @@ fun LibraryScreen(viewModel: DesktopViewModel, playerState: PlayerState) {
 
 @Composable
 fun LikedSongsScreen(viewModel: DesktopViewModel, playerState: PlayerState) {
+    LaunchedEffect(viewModel.isLoggedIn) {
+        if (viewModel.isLoggedIn) {
+            viewModel.loadLikedSongs()
+        }
+    }
+
+    val page = viewModel.likedSongsPage
+    val songs: List<PlayerSong> = remember(page) {
+        page?.songs?.map { item ->
+            PlayerSong(
+                id = item.id,
+                title = item.title,
+                artist = item.artists.joinToString(", ") { it.name },
+                albumArt = item.thumbnail,
+                durationMs = (item.duration ?: 0) * 1000L,
+            )
+        } ?: emptyList()
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
+        // Hero Header (Spotify-like gradient)
         Box(
-            modifier = Modifier.fillMaxWidth().height(200.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(240.dp)
                 .background(
-                    Brush.verticalGradient(listOf(
-                        MaterialTheme.colorScheme.error.copy(alpha = 0.25f),
-                        MaterialTheme.colorScheme.background,
-                    ))
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                            MaterialTheme.colorScheme.background,
+                        )
+                    )
                 )
-                .padding(32.dp),
+                .padding(horizontal = 32.dp, vertical = 24.dp),
             contentAlignment = Alignment.BottomStart,
         ) {
-            Column {
-                Icon(Icons.Rounded.Favorite, "Liked",
-                    tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(48.dp))
-                Spacer(Modifier.height(8.dp))
-                Text("Liked Songs", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
+            ) {
+                // Gradient squircle cover
+                Box(
+                    modifier = Modifier
+                        .size(140.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.tertiary,
+                                )
+                            )
+                        )
+                        .shadow(12.dp, RoundedCornerShape(18.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Rounded.Favorite,
+                        contentDescription = "Liked Songs",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(60.dp),
+                    )
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Playlist",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Liked Songs",
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        if (viewModel.isLoggedIn) {
+                            "${songs.size} song${if (songs.size == 1) "" else "s"}"
+                        } else {
+                            "Sign in to sync your YouTube Music likes"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
-        if (!viewModel.isLoggedIn) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Sign in to see your liked songs", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(12.dp))
-                    Button(onClick = { openGoogleLogin(viewModel) }) {
-                        Text("Sign in with Google")
+
+        // Action bar (Play all, Shuffle)
+        if (songs.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 32.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Button(
+                    onClick = {
+                        playerState.playQueue(songs, 0)
+                    },
+                    shape = RoundedCornerShape(50),
+                    contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, null, Modifier.size(22.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Play", style = MaterialTheme.typography.titleSmall)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        val shuffled = songs.shuffled()
+                        playerState.playQueue(shuffled, 0)
+                    },
+                    shape = RoundedCornerShape(50),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                ) {
+                    Icon(Icons.Rounded.Shuffle, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Shuffle", style = MaterialTheme.typography.titleSmall)
+                }
+            }
+        }
+
+        // Song list content
+        when {
+            !viewModel.isLoggedIn -> {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(32.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.FavoriteBorder,
+                            null,
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        )
+                        Text(
+                            "Sign in to see your liked songs",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            "Your likes from YouTube Music will sync automatically",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { openGoogleLogin(viewModel) },
+                            shape = RoundedCornerShape(50),
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.Login, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Sign in with Google")
+                        }
                     }
                 }
             }
-        } else {
-            Text("Loading liked songs...",
-                modifier = Modifier.padding(24.dp),
-                style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            viewModel.likedSongsLoading -> {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(32.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(40.dp))
+                        Text(
+                            "Loading liked songs...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            viewModel.likedSongsError != null -> {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(32.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            viewModel.likedSongsError ?: "Failed to load liked songs",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Button(
+                            onClick = { viewModel.loadLikedSongs(force = true) },
+                            shape = RoundedCornerShape(50),
+                        ) {
+                            Text("Retry")
+                        }
+                    }
+                }
+            }
+
+            songs.isEmpty() -> {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(32.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.FavoriteBorder,
+                            null,
+                            modifier = Modifier.size(56.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                        )
+                        Text(
+                            "Songs you like will appear here",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            "Click the heart icon on any track to add it to your Liked Songs",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            else -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+                    contentPadding = PaddingValues(bottom = 32.dp),
+                ) {
+                    itemsIndexed(songs, key = { index, song -> "${song.id}_$index" }) { index, song ->
+                        val isCurrentSong = playerState.currentSong?.id == song.id
+                        val isPlaying = isCurrentSong && playerState.isPlaying
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isCurrentSong)
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                            else
+                                Color.Transparent,
+                            onClick = {
+                                playerState.playQueue(songs, index)
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Box(
+                                    modifier = Modifier.width(32.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    if (isPlaying) {
+                                        PlayingIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    } else {
+                                        Text(
+                                            "${index + 1}",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = if (isCurrentSong)
+                                                MaterialTheme.colorScheme.primary
+                                            else
+                                                MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+
+                                Spacer(Modifier.width(8.dp))
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    AsyncImage(
+                                        url = song.albumArt,
+                                        contentDescription = song.title,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop,
+                                    )
+                                }
+
+                                Spacer(Modifier.width(14.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        song.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (isCurrentSong) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isCurrentSong)
+                                            MaterialTheme.colorScheme.primary
+                                        else
+                                            MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        song.artist,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = { viewModel.toggleLike(song.id) },
+                                    modifier = Modifier.size(36.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.Favorite,
+                                        contentDescription = "Unlike",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+
+                                if (song.durationMs > 0) {
+                                    val totalSeconds = song.durationMs / 1000
+                                    val minutes = totalSeconds / 60
+                                    val seconds = totalSeconds % 60
+                                    Text(
+                                        "%d:%02d".format(minutes, seconds),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(start = 12.dp, end = 8.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -2095,418 +2549,498 @@ fun SettingsScreen(
     var showCookieDialog by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    Column(modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState())) {
-        Text("Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(24.dp))
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 900.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 32.dp, vertical = 24.dp),
+        ) {
+            Text(
+                text = "Settings",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.height(16.dp))
 
-        // Account
-        SettingsSection("Account", Icons.Rounded.AccountCircle) {
-            if (viewModel.isLoggedIn) {
-                ListItem(
-                    headlineContent = { Text(viewModel.accountName ?: "Logged in") },
-                    supportingContent = { Text(viewModel.accountEmail ?: "YouTube Music account") },
-                    leadingContent = { Icon(Icons.Rounded.Person, null, tint = MaterialTheme.colorScheme.primary) },
-                    trailingContent = {
-                        OutlinedButton(onClick = { viewModel.logout() }) { Text("Sign out") }
+            // Account
+            Material3SettingsGroupContainer(title = "Account") {
+                if (viewModel.isLoggedIn) {
+                    Material3SettingsCard(shape = settingsCardShape(0, 1)) {
+                        Material3SettingsRow(
+                            title = viewModel.accountName ?: "Logged in",
+                            subtitle = viewModel.accountEmail ?: "YouTube Music account",
+                            icon = Icons.Rounded.Person,
+                            isHighlighted = true,
+                            trailingContent = {
+                                OutlinedButton(
+                                    onClick = { viewModel.logout() },
+                                    shape = RoundedCornerShape(50),
+                                ) {
+                                    Text("Sign out")
+                                }
+                            },
+                        )
                     }
-                )
-            } else {
-                ListItem(
-                    headlineContent = { Text("Not signed in") },
-                    supportingContent = { Text("Sign in to access your library & playlists") },
-                    leadingContent = { Icon(Icons.Rounded.Person, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                )
-                Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            viewModel.clearLoginError()
-                            openGoogleLogin(viewModel)
-                        },
-                        enabled = !viewModel.loginInProgress,
-                    ) {
-                        Icon(Icons.AutoMirrored.Rounded.Login, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (viewModel.loginInProgress) "Signing in..." else "Sign in with Google")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.clearLoginError()
-                            showCookieDialog = true
-                        },
-                        enabled = !viewModel.loginInProgress,
-                    ) {
-                        Text("Paste cookie")
-                    }
-                }
-                viewModel.loginError?.let { message ->
-                    Text(
-                        text = message,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    )
-                }
-            }
-        }
-
-        // Appearance
-        SettingsSection("Appearance", Icons.Rounded.Palette) {
-            // Dynamic color
-            ListItem(
-                headlineContent = { Text("Dynamic color from album art") },
-                supportingContent = {
-                    Text(
-                        if (dynamicColor)
-                            "Theme adapts to the current song's artwork"
-                        else
-                            "Theme uses your chosen color below"
-                    )
-                },
-                leadingContent = {
-                    Icon(
-                        Icons.Rounded.AutoAwesome, null,
-                        tint = if (dynamicColor) MaterialTheme.colorScheme.primary
-                               else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                },
-                trailingContent = {
-                    Switch(checked = dynamicColor, onCheckedChange = onDynamicColorChanged)
-                }
-            )
-            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-            ListItem(
-                headlineContent = { Text("Pure black background") },
-                supportingContent = { Text("Use AMOLED-friendly pure black") },
-                trailingContent = { Switch(checked = pureBlack, onCheckedChange = onPureBlackChanged) }
-            )
-            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-            ListItem(
-                headlineContent = { Text("Fallback theme color") },
-                supportingContent = {
-                    Text(
-                        if (dynamicColor) "Used when no album art is available"
-                        else "Active — dynamic color is off"
-                    )
-                },
-            )
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    .alpha(if (dynamicColor) 0.45f else 1f),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                val colors = listOf(
-                    Color(0xFFED5564) to "Red", Color(0xFF2196F3) to "Blue",
-                    Color(0xFF4CAF50) to "Green", Color(0xFFFF9800) to "Orange",
-                    Color(0xFF9C27B0) to "Purple", Color(0xFF00BCD4) to "Teal",
-                    Color(0xFFE91E63) to "Pink", Color(0xFF607D8B) to "Gray",
-                )
-                colors.forEach { (color, _) ->
-                    val isSelected = themeColor == color
-                    Surface(
-                        modifier = Modifier.size(36.dp), shape = CircleShape, color = color,
-                        border = if (isSelected) BorderStroke(3.dp, MaterialTheme.colorScheme.onSurface) else null,
-                        onClick = { onThemeColorChanged(color) },
-                    ) {
-                        if (isSelected) {
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Rounded.Check, "Selected", tint = Color.White, modifier = Modifier.size(18.dp))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Sync — real connection status driven by syncClient
-        SettingsSection("Sync & Remote", Icons.Rounded.Devices) {
-            val isSyncConnected by remember { derivedStateOf { syncClient.connected } }
-            var syncEnabled by remember { mutableStateOf(viewModel.isLoggedIn) }
-            ListItem(
-                headlineContent = { Text("Cross-device sync") },
-                supportingContent = { Text("Control playback from mobile/other devices") },
-                trailingContent = {
-                    Switch(
-                        checked = syncEnabled,
-                        onCheckedChange = { enabled ->
-                            syncEnabled = enabled
-                            val email = viewModel.accountEmail
-                            if (enabled && email != null) syncClient.connect(email)
-                            else syncClient.disconnect()
-                        }
-                    )
-                }
-            )
-            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-            ListItem(
-                headlineContent = { Text("Relay server") },
-                supportingContent = { Text("metrolistsyncrelay-ooae5v0w.b4a.run") },
-                trailingContent = {
-                    val (bgColor, label) = if (isSyncConnected)
-                        MaterialTheme.colorScheme.primaryContainer to "Connected"
-                    else
-                        MaterialTheme.colorScheme.errorContainer to "Disconnected"
-                    Surface(shape = RoundedCornerShape(12.dp), color = bgColor) {
-                        Text(
-                            label,
-                            Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (isSyncConnected)
-                                MaterialTheme.colorScheme.onPrimaryContainer
-                            else
-                                MaterialTheme.colorScheme.onErrorContainer,
+                } else {
+                    Material3SettingsCard(shape = settingsCardShape(0, 1)) {
+                        Material3SettingsRow(
+                            title = "Not signed in",
+                            subtitle = "Sign in to access your library, playlists & remote sync",
+                            icon = Icons.Rounded.AccountCircle,
+                            bottomContent = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(
+                                            onClick = {
+                                                viewModel.clearLoginError()
+                                                openGoogleLogin(viewModel)
+                                            },
+                                            enabled = !viewModel.loginInProgress,
+                                            shape = RoundedCornerShape(50),
+                                        ) {
+                                            Icon(Icons.AutoMirrored.Rounded.Login, null, Modifier.size(18.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(if (viewModel.loginInProgress) "Signing in..." else "Sign in with Google")
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                viewModel.clearLoginError()
+                                                showCookieDialog = true
+                                            },
+                                            enabled = !viewModel.loginInProgress,
+                                            shape = RoundedCornerShape(50),
+                                        ) {
+                                            Text("Paste cookie")
+                                        }
+                                    }
+                                    viewModel.loginError?.let { message ->
+                                        Text(
+                                            text = message,
+                                            color = MaterialTheme.colorScheme.error,
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+                                }
+                            },
                         )
                     }
                 }
-            )
-            if (!viewModel.isLoggedIn) {
-                ListItem(
-                    headlineContent = { Text("Sign in required", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                    supportingContent = { Text("Remote sync requires a signed-in Google account",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)) },
-                    leadingContent = { Icon(Icons.Rounded.Info, null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.size(18.dp)) },
-                )
             }
-        }
 
-        // Audio Cache
-        SettingsSection("Audio Cache", Icons.Rounded.Cached) {
-            val usedMb = com.metrolist.desktop.data.StreamCache.usedBytes / 1024 / 1024
-            val totalSongs = com.metrolist.desktop.data.StreamCache.entries.size
-            ListItem(
-                headlineContent = { Text("Cache size limit") },
-                supportingContent = {
-                    Text(
-                        if (audioCacheSize == com.metrolist.desktop.data.CacheSize.DISABLED)
-                            "Caching disabled — songs always stream live"
+            // Appearance
+            Material3SettingsGroupContainer(title = "Appearance") {
+                // Card 1: Dynamic color
+                Material3SettingsCard(shape = settingsCardShape(0, 3)) {
+                    Material3SettingsRow(
+                        title = "Dynamic color from album art",
+                        subtitle = if (dynamicColor)
+                            "Theme adapts to the current song's artwork"
                         else
-                            "$usedMb MB used · $totalSongs songs cached"
-                    )
-                },
-                leadingContent = {
-                    Icon(Icons.Rounded.Storage, null, tint = MaterialTheme.colorScheme.primary)
-                }
-            )
-            // Size selector chips
-            FlowRow(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                com.metrolist.desktop.data.CacheSize.entries.forEach { size ->
-                    val selected = audioCacheSize == size
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onAudioCacheSizeChanged(size) },
-                        label = { Text(size.label) },
-                        leadingIcon = if (selected) {{
-                            Icon(Icons.Rounded.Check, null, Modifier.size(16.dp))
-                        }} else null,
-                    )
-                }
-            }
-            if (audioCacheSize != com.metrolist.desktop.data.CacheSize.DISABLED) {
-                // Progress bar + clear button
-                val fillFraction = com.metrolist.desktop.data.StreamCache.fillFraction
-                HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    LinearProgressIndicator(
-                        progress = { fillFraction },
-                        modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)),
-                        color = when {
-                            fillFraction > 0.9f -> MaterialTheme.colorScheme.error
-                            fillFraction > 0.7f -> MaterialTheme.colorScheme.tertiary
-                            else -> MaterialTheme.colorScheme.primary
+                            "Theme uses your chosen fallback color below",
+                        icon = Icons.Rounded.AutoAwesome,
+                        isHighlighted = dynamicColor,
+                        trailingContent = {
+                            Switch(checked = dynamicColor, onCheckedChange = onDynamicColorChanged)
                         },
-                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                     )
-                    Text(
-                        "${(fillFraction * 100).toInt()}%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    OutlinedButton(
-                        onClick = { com.metrolist.desktop.data.StreamCache.clearAll() },
-                        shape = RoundedCornerShape(50),
-                        modifier = Modifier.height(36.dp),
-                    ) {
-                        Icon(Icons.Rounded.DeleteSweep, "Clear cache", Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Clear", style = MaterialTheme.typography.labelMedium)
-                    }
                 }
-            }
-        }
 
-        SettingsSection("App Updates", Icons.Rounded.SystemUpdate) {
-            ListItem(
-                headlineContent = { Text("Current version") },
-                supportingContent = { Text("Metrolist Desktop v$DESKTOP_APP_VERSION") },
-                leadingContent = {
-                    Icon(
-                        Icons.Rounded.Info,
-                        null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                // Card 2: Pure black AMOLED background
+                Material3SettingsCard(shape = settingsCardShape(1, 3)) {
+                    Material3SettingsRow(
+                        title = "Pure black background",
+                        subtitle = "AMOLED-friendly deep black background across panels",
+                        icon = Icons.Rounded.DarkMode,
+                        trailingContent = {
+                            Switch(checked = pureBlack, onCheckedChange = onPureBlackChanged)
+                        },
                     )
-                },
-                trailingContent = {
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                runCatching { AppUpdater.checkForUpdate() }
-                                    .onFailure { println("[Updater] Manual check failed: ${it.message}") }
+                }
+
+                // Card 3: Fallback theme color + Palette
+                Material3SettingsCard(shape = settingsCardShape(2, 3)) {
+                    Material3SettingsRow(
+                        title = "Fallback theme color",
+                        subtitle = if (dynamicColor)
+                            "Used when no album art is available"
+                        else
+                            "Active — dynamic color is off",
+                        icon = Icons.Rounded.Palette,
+                        bottomContent = {
+                            Row(
+                                modifier = Modifier
+                                    .alpha(if (dynamicColor) 0.45f else 1f)
+                                    .padding(top = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                val colors = listOf(
+                                    Color(0xFFED5564) to "Red", Color(0xFF2196F3) to "Blue",
+                                    Color(0xFF4CAF50) to "Green", Color(0xFFFF9800) to "Orange",
+                                    Color(0xFF9C27B0) to "Purple", Color(0xFF00BCD4) to "Teal",
+                                    Color(0xFFE91E63) to "Pink", Color(0xFF607D8B) to "Gray",
+                                )
+                                colors.forEach { (color, _) ->
+                                    val isSelected = themeColor == color
+                                    Surface(
+                                        modifier = Modifier.size(36.dp),
+                                        shape = CircleShape,
+                                        color = color,
+                                        border = if (isSelected) BorderStroke(3.dp, MaterialTheme.colorScheme.onSurface) else null,
+                                        onClick = { onThemeColorChanged(color) },
+                                    ) {
+                                        if (isSelected) {
+                                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                                Icon(Icons.Rounded.Check, "Selected", tint = Color.White, modifier = Modifier.size(18.dp))
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         },
-                    ) {
-                        Icon(Icons.Rounded.Refresh, null, Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Check now", style = MaterialTheme.typography.labelMedium)
+                    )
+                }
+            }
+
+            // Sync & Remote
+            Material3SettingsGroupContainer(title = "Sync & Remote") {
+                val isSyncConnected by remember { derivedStateOf { syncClient.connected } }
+                var syncEnabled by remember { mutableStateOf(viewModel.isLoggedIn) }
+                val totalSyncItems = if (!viewModel.isLoggedIn) 3 else 2
+
+                Material3SettingsCard(shape = settingsCardShape(0, totalSyncItems)) {
+                    Material3SettingsRow(
+                        title = "Cross-device sync",
+                        subtitle = "Control playback remotely from mobile & other clients",
+                        icon = Icons.Rounded.Devices,
+                        isHighlighted = syncEnabled,
+                        trailingContent = {
+                            Switch(
+                                checked = syncEnabled,
+                                onCheckedChange = { enabled ->
+                                    syncEnabled = enabled
+                                    val email = viewModel.accountEmail
+                                    if (enabled && email != null) syncClient.connect(email)
+                                    else syncClient.disconnect()
+                                },
+                            )
+                        },
+                    )
+                }
+
+                Material3SettingsCard(shape = settingsCardShape(1, totalSyncItems)) {
+                    val (bgColor, textColor, label) = if (isSyncConnected)
+                        Triple(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, "Connected")
+                    else
+                        Triple(MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer, "Disconnected")
+
+                    Material3SettingsRow(
+                        title = "Relay server",
+                        subtitle = "metrolistsyncrelay-ooae5v0w.b4a.run",
+                        icon = Icons.Rounded.Cloud,
+                        trailingContent = {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = bgColor,
+                            ) {
+                                Text(
+                                    text = label,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = textColor,
+                                )
+                            }
+                        },
+                    )
+                }
+
+                if (!viewModel.isLoggedIn) {
+                    Material3SettingsCard(shape = settingsCardShape(2, 3)) {
+                        Material3SettingsRow(
+                            title = "Sign in required",
+                            subtitle = "Remote sync requires a signed-in Google account",
+                            icon = Icons.Rounded.Info,
+                            enabled = false,
+                        )
                     }
-                },
-            )
-            HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-            if (!AppUpdater.updateAvailable) {
-                ListItem(
-                    headlineContent = { Text("You're up to date") },
-                    supportingContent = {
-                        Text(
-                            if (AppUpdater.latestVersion != null)
+                }
+            }
+
+            // Audio Cache
+            Material3SettingsGroupContainer(title = "Audio Cache") {
+                val usedMb = com.metrolist.desktop.data.StreamCache.usedBytes / 1024 / 1024
+                val totalSongs = com.metrolist.desktop.data.StreamCache.entries.size
+                val isCachingActive = audioCacheSize != com.metrolist.desktop.data.CacheSize.DISABLED
+                val totalCacheCards = if (isCachingActive) 2 else 1
+
+                Material3SettingsCard(shape = settingsCardShape(0, totalCacheCards)) {
+                    Material3SettingsRow(
+                        title = "Cache size limit",
+                        subtitle = if (!isCachingActive)
+                            "Caching disabled — songs always stream live"
+                        else
+                            "$usedMb MB used · $totalSongs songs cached",
+                        icon = Icons.Rounded.Storage,
+                        isHighlighted = isCachingActive,
+                        bottomContent = {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(top = 4.dp),
+                            ) {
+                                com.metrolist.desktop.data.CacheSize.entries.forEach { size ->
+                                    val selected = audioCacheSize == size
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = { onAudioCacheSizeChanged(size) },
+                                        label = { Text(size.label) },
+                                        leadingIcon = if (selected) {{
+                                            Icon(Icons.Rounded.Check, null, Modifier.size(16.dp))
+                                        }} else null,
+                                        shape = RoundedCornerShape(12.dp),
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
+
+                if (isCachingActive) {
+                    val fillFraction = com.metrolist.desktop.data.StreamCache.fillFraction
+                    Material3SettingsCard(shape = settingsCardShape(1, 2)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Cached,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(22.dp),
+                                )
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text(
+                                        "Storage Usage",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        "${(fillFraction * 100).toInt()}%",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                LinearProgressIndicator(
+                                    progress = { fillFraction },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp)
+                                        .clip(RoundedCornerShape(4.dp)),
+                                    color = when {
+                                        fillFraction > 0.9f -> MaterialTheme.colorScheme.error
+                                        fillFraction > 0.7f -> MaterialTheme.colorScheme.tertiary
+                                        else -> MaterialTheme.colorScheme.primary
+                                    },
+                                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                )
+                            }
+
+                            OutlinedButton(
+                                onClick = { com.metrolist.desktop.data.StreamCache.clearAll() },
+                                shape = RoundedCornerShape(50),
+                                modifier = Modifier.height(36.dp),
+                            ) {
+                                Icon(Icons.Rounded.DeleteSweep, "Clear cache", Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Clear", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // App Updates
+            Material3SettingsGroupContainer(title = "App Updates") {
+                Material3SettingsCard(shape = settingsCardShape(0, 2)) {
+                    Material3SettingsRow(
+                        title = "Current version",
+                        subtitle = "Metrolist Desktop v$DESKTOP_APP_VERSION",
+                        icon = Icons.Rounded.SystemUpdate,
+                        trailingContent = {
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        runCatching { AppUpdater.checkForUpdate() }
+                                            .onFailure { println("[Updater] Manual check failed: ${it.message}") }
+                                    }
+                                },
+                                shape = RoundedCornerShape(50),
+                            ) {
+                                Icon(Icons.Rounded.Refresh, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Check now", style = MaterialTheme.typography.labelMedium)
+                            }
+                        },
+                    )
+                }
+
+                Material3SettingsCard(shape = settingsCardShape(1, 2)) {
+                    if (!AppUpdater.updateAvailable) {
+                        Material3SettingsRow(
+                            title = "You're up to date",
+                            subtitle = if (AppUpdater.latestVersion != null)
                                 "Latest: v${AppUpdater.latestVersion}"
                             else
                                 "Checking for updates...",
+                            icon = Icons.Rounded.CheckCircle,
+                            isHighlighted = true,
                         )
-                    },
-                    leadingContent = {
-                        Icon(
-                            Icons.Rounded.CheckCircle,
-                            null,
-                            tint = MaterialTheme.colorScheme.primary,
+                    } else {
+                        val downloadState = AppUpdater.downloadState
+                        val downloadProgress = AppUpdater.downloadProgress
+
+                        Material3SettingsRow(
+                            title = "Update available - v${AppUpdater.latestVersion}",
+                            subtitle = "Your version: v$DESKTOP_APP_VERSION",
+                            icon = Icons.Rounded.NewReleases,
+                            isHighlighted = true,
+                            bottomContent = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    AppUpdater.releaseNotes?.let { notes ->
+                                        var expanded by remember(notes) { mutableStateOf(false) }
+                                        TextButton(onClick = { expanded = !expanded }) {
+                                            Icon(
+                                                if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                                null,
+                                                Modifier.size(16.dp),
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(if (expanded) "Hide changelog" else "View changelog")
+                                        }
+                                        AnimatedVisibility(expanded) {
+                                            Text(
+                                                notes,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                                            )
+                                        }
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    ) {
+                                        when (downloadState) {
+                                            UpdateDownloadState.IDLE -> {
+                                                Button(
+                                                    onClick = { AppUpdater.downloadUpdate() },
+                                                    shape = RoundedCornerShape(50),
+                                                ) {
+                                                    Icon(Icons.Rounded.Download, null, Modifier.size(18.dp))
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("Download & Install")
+                                                }
+                                            }
+                                            UpdateDownloadState.DOWNLOADING -> {
+                                                LinearProgressIndicator(
+                                                    progress = { downloadProgress },
+                                                    modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                                )
+                                                Text(
+                                                    "${(downloadProgress * 100).toInt()}%",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                            UpdateDownloadState.DONE -> {
+                                                Icon(
+                                                    Icons.Rounded.DownloadDone,
+                                                    null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(20.dp),
+                                                )
+                                                Button(
+                                                    onClick = { AppUpdater.applyUpdate() },
+                                                    shape = RoundedCornerShape(50),
+                                                ) {
+                                                    Icon(Icons.Rounded.InstallDesktop, null, Modifier.size(18.dp))
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("Install Now")
+                                                }
+                                                TextButton(onClick = { AppUpdater.openDownloadedInstallerLocation() }) {
+                                                    Text("Show file")
+                                                }
+                                            }
+                                            UpdateDownloadState.ERROR -> {
+                                                Icon(
+                                                    Icons.Rounded.ErrorOutline,
+                                                    null,
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(20.dp),
+                                                )
+                                                Text(
+                                                    "Download failed",
+                                                    color = MaterialTheme.colorScheme.error,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                )
+                                                TextButton(onClick = { AppUpdater.downloadUpdate() }) {
+                                                    Text("Retry")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
                         )
-                    },
-                )
-            } else {
-                val downloadState = AppUpdater.downloadState
-                val downloadProgress = AppUpdater.downloadProgress
-
-                ListItem(
-                    headlineContent = {
-                        Text(
-                            "Update available - v${AppUpdater.latestVersion}",
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    },
-                    supportingContent = { Text("Your version: v$DESKTOP_APP_VERSION") },
-                    leadingContent = {
-                        Icon(
-                            Icons.Rounded.NewReleases,
-                            null,
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                    },
-                )
-
-                AppUpdater.releaseNotes?.let { notes ->
-                    var expanded by remember(notes) { mutableStateOf(false) }
-
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                        TextButton(onClick = { expanded = !expanded }) {
-                            Icon(
-                                if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                                null,
-                                Modifier.size(16.dp),
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (expanded) "Hide changelog" else "View changelog")
-                        }
-                        AnimatedVisibility(expanded) {
-                            Text(
-                                notes,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
-                            )
-                        }
-                    }
-                }
-
-                HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    when (downloadState) {
-                        UpdateDownloadState.IDLE -> {
-                            Button(onClick = { AppUpdater.downloadUpdate() }) {
-                                Icon(Icons.Rounded.Download, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Download & Install")
-                            }
-                        }
-
-                        UpdateDownloadState.DOWNLOADING -> {
-                            LinearProgressIndicator(
-                                progress = { downloadProgress },
-                                modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)),
-                            )
-                            Text(
-                                "${(downloadProgress * 100).toInt()}%",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-
-                        UpdateDownloadState.DONE -> {
-                            Icon(
-                                Icons.Rounded.DownloadDone,
-                                null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                            Button(onClick = { AppUpdater.applyUpdate() }) {
-                                Icon(Icons.Rounded.InstallDesktop, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Install Now")
-                            }
-                            TextButton(onClick = { AppUpdater.openDownloadedInstallerLocation() }) {
-                                Text("Show file")
-                            }
-                        }
-
-                        UpdateDownloadState.ERROR -> {
-                            Icon(
-                                Icons.Rounded.ErrorOutline,
-                                null,
-                                tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(20.dp),
-                            )
-                            Text(
-                                "Download failed",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                            TextButton(onClick = { AppUpdater.downloadUpdate() }) {
-                                Text("Retry")
-                            }
-                        }
                     }
                 }
             }
-        }
 
-        // About
-        SettingsSection("About", Icons.Rounded.Info) {
-            ListItem(
-                headlineContent = { Text("Version") },
-                supportingContent = { Text("Metrolist Desktop v$DESKTOP_APP_VERSION") },
+            // About
+            Material3SettingsGroup(
+                title = "About",
+                items = listOf(
+                    Material3SettingsItem(
+                        title = "Version",
+                        subtitle = "Metrolist Desktop v$DESKTOP_APP_VERSION",
+                        icon = Icons.Rounded.Info,
+                    ),
+                    Material3SettingsItem(
+                        title = "License",
+                        subtitle = "GPL-3.0 · Open Source",
+                        icon = Icons.Rounded.Code,
+                    ),
+                ),
             )
-            ListItem(headlineContent = { Text("License") }, supportingContent = { Text("GPL-3.0 · Open Source") })
+
+            Spacer(Modifier.height(32.dp))
         }
     }
 
@@ -2565,29 +3099,6 @@ fun SettingsScreen(
                 ) { Text("Cancel") }
             }
         )
-    }
-}
-
-@Composable
-fun SettingsSection(title: String, icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-    ) {
-        Column {
-            Row(
-                modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(icon, title, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(title, style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-            }
-            content()
-            Spacer(Modifier.height(8.dp))
-        }
     }
 }
 
@@ -2952,6 +3463,7 @@ fun DownloadsScreen(playerState: PlayerState, viewModel: DesktopViewModel) {
 // Player Bar
 // ============================================================
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel: DesktopViewModel) {
     val song = playerState.currentSong ?: return
@@ -2959,27 +3471,48 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        tonalElevation = 3.dp,
+        tonalElevation = 6.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)),
     ) {
-        Column {
-            Slider(
-                value = playerState.progressFraction,
-                onValueChange = { playerState.seekTo((it * playerState.duration).toLong()) },
-                modifier = Modifier.fillMaxWidth().height(8.dp),
-                colors = SliderDefaults.colors(
-                    thumbColor = MaterialTheme.colorScheme.primary,
-                    activeTrackColor = MaterialTheme.colorScheme.primary,
-                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                ),
-            )
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // ── Top Seeker Scrubber ──
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(14.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Slider(
+                    value = playerState.progressFraction,
+                    onValueChange = { playerState.seekTo((it * playerState.duration).toLong()) },
+                    modifier = Modifier.fillMaxWidth().height(14.dp),
+                    colors = SliderDefaults.colors(
+                        thumbColor = MaterialTheme.colorScheme.primary,
+                        activeTrackColor = MaterialTheme.colorScheme.primary,
+                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    ),
+                )
+            }
+
+            // ── Main Controls Row ──
             Row(
-                modifier = Modifier.fillMaxWidth().height(72.dp).padding(horizontal = 12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(72.dp)
+                    .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Song info
-                Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                // ── Left: Song Info ──
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Box(
-                        Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
+                        Modifier
+                            .size(52.dp)
+                            .shadow(4.dp, RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                         contentAlignment = Alignment.Center,
                     ) {
                         AsyncImage(
@@ -2993,98 +3526,200 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     if (playerState.isLoadingStream) {
-                                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(20.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        )
                                     } else {
-                                        Icon(Icons.Rounded.MusicNote, "art",
+                                        Icon(
+                                            Icons.Rounded.MusicNote, "art",
                                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.size(24.dp))
+                                            modifier = Modifier.size(24.dp),
+                                        )
                                     }
                                 }
                             },
                         )
+
+                        if (playerState.isPlaying) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.4f)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                PlayingIndicator(
+                                    color = Color.White,
+                                    modifier = Modifier.height(18.dp),
+                                )
+                            }
+                        }
                     }
-                    Spacer(Modifier.width(12.dp))
-                    Column {
-                        Text(song.title, style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+
+                    Spacer(Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f, fill = false)) {
+                        Text(
+                            song.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
                         val statusText = when {
-                            playerState.isLoadingStream -> "Loading stream..."
+                            playerState.isLoadingStream -> "Buffering stream..."
                             playerState.streamError != null -> playerState.streamError ?: "Error"
                             else -> song.artist
                         }
-                        Text(statusText, style = MaterialTheme.typography.bodySmall,
+                        Text(
+                            statusText,
+                            style = MaterialTheme.typography.bodySmall,
                             color = if (playerState.streamError != null) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
-                    Spacer(Modifier.width(8.dp))
+
+                    Spacer(Modifier.width(10.dp))
+
                     val isLiked = playerState.currentSong?.let { viewModel.isLiked(it.id) } == true
                     IconButton(
                         onClick = {
                             val currentSong = playerState.currentSong
                             if (currentSong != null) viewModel.toggleLike(currentSong.id)
                         },
-                        modifier = Modifier.size(36.dp),
+                        modifier = Modifier.size(38.dp),
                     ) {
                         Icon(
                             if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                            "Like",
+                            contentDescription = "Like",
                             tint = if (isLiked) MaterialTheme.colorScheme.error
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp),
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp),
                         )
                     }
                 }
 
-                // Controls
-                Row(modifier = Modifier.weight(1.2f), horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { playerState.toggleShuffle() }, Modifier.size(36.dp)) {
-                        Icon(Icons.Rounded.Shuffle, "Shuffle",
-                            tint = if (playerState.isShuffled) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
-                    }
-                    IconButton(onClick = { playerState.skipPrevious() }, Modifier.size(40.dp)) {
-                        Icon(Icons.Rounded.SkipPrevious, "Previous", modifier = Modifier.size(28.dp))
-                    }
-                    FilledIconButton(
-                        onClick = { playerState.togglePlayPause() }, modifier = Modifier.size(44.dp),
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary),
+                // ── Center: Playback Controls & Timestamps ──
+                Column(
+                    modifier = Modifier.weight(1.3f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(if (playerState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            "Play/Pause", modifier = Modifier.size(28.dp))
+                        IconButton(
+                            onClick = { playerState.toggleShuffle() },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Icon(
+                                Icons.Rounded.Shuffle, "Shuffle",
+                                tint = if (playerState.isShuffled) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { playerState.skipPrevious() },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(Icons.Rounded.SkipPrevious, "Previous", modifier = Modifier.size(28.dp))
+                        }
+
+                        FilledIconButton(
+                            onClick = { playerState.togglePlayPause() },
+                            modifier = Modifier.size(46.dp),
+                            shape = CircleShape,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
+                            ),
+                        ) {
+                            Icon(
+                                if (playerState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                "Play/Pause",
+                                modifier = Modifier.size(28.dp),
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { playerState.skipNext() },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(Icons.Rounded.SkipNext, "Next", modifier = Modifier.size(28.dp))
+                        }
+
+                        IconButton(
+                            onClick = { playerState.cycleRepeat() },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Icon(
+                                if (playerState.repeatMode == PlayerState.RepeatMode.ONE) Icons.Rounded.RepeatOne
+                                else Icons.Rounded.Repeat,
+                                "Repeat",
+                                tint = if (playerState.repeatMode != PlayerState.RepeatMode.OFF) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
-                    IconButton(onClick = { playerState.skipNext() }, Modifier.size(40.dp)) {
-                        Icon(Icons.Rounded.SkipNext, "Next", modifier = Modifier.size(28.dp))
-                    }
-                    IconButton(onClick = { playerState.cycleRepeat() }, Modifier.size(36.dp)) {
-                        Icon(
-                            if (playerState.repeatMode == PlayerState.RepeatMode.ONE) Icons.Rounded.RepeatOne
-                            else Icons.Rounded.Repeat, "Repeat",
-                            tint = if (playerState.repeatMode != PlayerState.RepeatMode.OFF) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
-                    }
+
+                    Text(
+                        "${playerState.currentTimeFormatted} / ${playerState.durationFormatted}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                    )
                 }
 
-                // Volume + extras
-                Row(modifier = Modifier.weight(1f), horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Text("${playerState.currentTimeFormatted} / ${playerState.durationFormatted}",
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(12.dp))
-                    Icon(Icons.AutoMirrored.Rounded.VolumeUp, "Volume",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                // ── Right: Volume & Extra Controls ──
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val volumeIcon = when {
+                        playerState.volume <= 0.001f -> Icons.AutoMirrored.Rounded.VolumeMute
+                        playerState.volume < 0.5f -> Icons.AutoMirrored.Rounded.VolumeDown
+                        else -> Icons.AutoMirrored.Rounded.VolumeUp
+                    }
+                    var previousVolume by remember { mutableStateOf(1f) }
+                    IconButton(
+                        onClick = {
+                            if (playerState.volume > 0.001f) {
+                                previousVolume = playerState.volume
+                                playerState.volume = 0f
+                            } else {
+                                playerState.volume = if (previousVolume > 0.001f) previousVolume else 0.7f
+                            }
+                        },
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            volumeIcon, "Mute toggle",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(19.dp),
+                        )
+                    }
+
                     Slider(
-                        value = playerState.volume, onValueChange = { playerState.volume = it },
-                        modifier = Modifier.width(100.dp),
+                        value = playerState.volume,
+                        onValueChange = { playerState.volume = it },
+                        modifier = Modifier.width(90.dp),
                         colors = SliderDefaults.colors(
-                            thumbColor = MaterialTheme.colorScheme.onSurface,
-                            activeTrackColor = MaterialTheme.colorScheme.onSurface,
-                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest),
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        ),
                     )
-                    // Download button for current song
+
+                    Spacer(Modifier.width(8.dp))
+
                     val currentDlState = song.let { com.metrolist.desktop.data.DownloadManager.downloads[it.id] }
                     val currentDlProgress = song.let { com.metrolist.desktop.data.DownloadManager.progress[it.id] } ?: 0f
                     IconButton(
@@ -3093,55 +3728,54 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
                                 com.metrolist.desktop.data.DownloadManager.downloadSong(playerState.currentSong!!)
                             }
                         },
-                        Modifier.size(36.dp),
+                        modifier = Modifier.size(36.dp),
                     ) {
                         when (currentDlState) {
                             com.metrolist.desktop.data.DownloadState.DONE ->
-                                Icon(Icons.Rounded.DownloadDone, "Downloaded",
-                                    tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Icon(
+                                    Icons.Rounded.DownloadDone, "Downloaded",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp),
+                                )
                             com.metrolist.desktop.data.DownloadState.DOWNLOADING,
                             com.metrolist.desktop.data.DownloadState.QUEUED ->
                                 CircularProgressIndicator(
                                     progress = { currentDlProgress },
-                                    modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary,
                                 )
                             else ->
-                                Icon(Icons.Rounded.Download, "Download",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                                Icon(
+                                    Icons.Rounded.Download, "Download",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp),
+                                )
                         }
                     }
+
                     // Lyrics toggle button
                     IconButton(
                         onClick = { playerState.showLyrics = !playerState.showLyrics },
-                        Modifier.size(36.dp),
+                        modifier = Modifier.size(36.dp),
                     ) {
-                        Icon(
-                            Icons.Rounded.MusicNote, "Lyrics",
-                            tint = if (playerState.showLyrics) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                    // Now Playing toggle button
-                    IconButton(
-                        onClick = {
-                            if (playerState.showRightPanel && !playerState.showQueue) {
-                                playerState.showRightPanel = false
-                            } else {
-                                playerState.showRightPanel = true
-                                playerState.showQueue = false
+                        val active = playerState.showLyrics
+                        Surface(
+                            shape = CircleShape,
+                            color = if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Rounded.MusicNote, "Lyrics",
+                                    tint = if (active) MaterialTheme.colorScheme.onPrimaryContainer
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(19.dp),
+                                )
                             }
-                        },
-                        Modifier.size(36.dp),
-                    ) {
-                        val active = playerState.showRightPanel && !playerState.showQueue
-                        Icon(
-                            Icons.AutoMirrored.Rounded.QueueMusic, "Now Playing",
-                            tint = if (active) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp),
-                        )
+                        }
                     }
+
                     // Queue toggle button
                     IconButton(
                         onClick = {
@@ -3152,19 +3786,52 @@ fun PlayerBar(playerState: PlayerState, syncClient: DesktopSyncClient, viewModel
                                 playerState.showQueue = true
                             }
                         },
-                        Modifier.size(36.dp),
+                        modifier = Modifier.size(36.dp),
                     ) {
                         val active = playerState.showRightPanel && playerState.showQueue
-                        Icon(
-                            Icons.Rounded.List, "Queue",
-                            tint = if (active) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp),
-                        )
+                        Surface(
+                            shape = CircleShape,
+                            color = if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.AutoMirrored.Rounded.QueueMusic, "Queue",
+                                    tint = if (active) MaterialTheme.colorScheme.onPrimaryContainer
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(19.dp),
+                                )
+                            }
+                        }
                     }
-                    IconButton(onClick = {}, Modifier.size(36.dp)) {
-                        Icon(Icons.Rounded.Devices, "Devices",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+
+                    // Now Playing panel toggle button
+                    IconButton(
+                        onClick = {
+                            if (playerState.showRightPanel && !playerState.showQueue) {
+                                playerState.showRightPanel = false
+                            } else {
+                                playerState.showRightPanel = true
+                                playerState.showQueue = false
+                            }
+                        },
+                        modifier = Modifier.size(36.dp),
+                    ) {
+                        val active = playerState.showRightPanel && !playerState.showQueue
+                        Surface(
+                            shape = CircleShape,
+                            color = if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Rounded.Info, "Now Playing",
+                                    tint = if (active) MaterialTheme.colorScheme.onPrimaryContainer
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(19.dp),
+                                )
+                            }
+                        }
                     }
                 }
             }

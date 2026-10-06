@@ -377,10 +377,11 @@ class PlayerState {
             return
         }
 
-        // Apply n-transform to the stream URL (required for web-based clients to avoid 403)
+        // Apply n-transform to the stream URL to avoid throttling.
+        // Any URL containing an 'n' parameter needs this transform, regardless of client type.
         var finalUrl = winner.url
         val isWebClient = winner.clientName in listOf("WEB", "WEB_REMIX", "WEB_CREATOR", "TVHTML5", "TVHTML5_SIMPLY_EMBEDDED_PLAYER")
-        if (isWebClient) {
+        if (Regex("[?&]n=[^&]+").containsMatchIn(finalUrl)) {
             try {
                 println("[Player] Applying n-transform to stream URL (client=${winner.clientName})...")
                 finalUrl = DesktopCipherDeobfuscator.transformN(finalUrl)
@@ -389,7 +390,7 @@ class PlayerState {
             }
         }
 
-        // Append pot= parameter with streaming data PoToken
+        // Append pot= parameter with streaming data PoToken (web clients only)
         if (isWebClient) {
             val poTokenResult = try {
                 poTokenDeferred.await()
@@ -663,7 +664,7 @@ class PlayerState {
             try {
                 val requestBuilder = Request.Builder()
                     .url(url)
-                    .get()
+                    .head()
                     .header("User-Agent", playbackUserAgent(clientName))
 
                 if (clientName.contains("WEB")) {

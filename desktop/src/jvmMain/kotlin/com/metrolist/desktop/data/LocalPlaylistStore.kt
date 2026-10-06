@@ -128,6 +128,18 @@ object LocalPlaylistStore {
         return true
     }
 
+    fun addSongsToPlaylist(playlistId: String, songs: List<PlayerSong>): Int {
+        val playlist = getPlaylist(playlistId) ?: return 0
+        val existing = playlist.songs.mapTo(mutableSetOf()) { it.id }
+        val now = System.currentTimeMillis()
+        val additions = songs.filter { existing.add(it.id) }.map { song ->
+            LocalPlaylistSong(song.id, song.title, song.artist, song.albumArt, song.durationMs, now)
+        }
+        if (additions.isEmpty()) return 0
+        replacePlaylist(playlist.copy(songs = playlist.songs + additions, updatedAt = now))
+        return additions.size
+    }
+
     fun removeSongFromPlaylist(playlistId: String, songId: String) {
         updatePlaylist(playlistId) { playlist ->
             playlist.copy(

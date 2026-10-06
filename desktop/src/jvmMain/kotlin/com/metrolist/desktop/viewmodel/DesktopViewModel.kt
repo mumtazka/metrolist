@@ -19,6 +19,11 @@ import com.metrolist.innertube.models.ArtistItem
 import com.metrolist.innertube.models.PlaylistItem
 import com.metrolist.innertube.pages.ArtistPage
 import com.metrolist.innertube.pages.HomePage
+import com.metrolist.innertube.pages.PlaylistPage
+import com.metrolist.desktop.importer.ExternalPlaylist
+import com.metrolist.desktop.importer.MatchedTrack
+import com.metrolist.desktop.importer.PlaylistMatcher
+import com.metrolist.desktop.importer.SpotifyPlaylistImporter
 import kotlinx.coroutines.*
 
 class DesktopViewModel(private val scope: CoroutineScope) {
@@ -68,6 +73,15 @@ class DesktopViewModel(private val scope: CoroutineScope) {
     var playlistError by mutableStateOf<String?>(null)
         private set
 
+    var externalPlaylist by mutableStateOf<ExternalPlaylist?>(null)
+        private set
+    var externalMatches by mutableStateOf<List<MatchedTrack>>(emptyList())
+        private set
+    var externalImportLoading by mutableStateOf(false)
+        private set
+    var externalImportError by mutableStateOf<String?>(null)
+        private set
+
     val localPlaylists: List<LocalPlaylist>
         get() = LocalPlaylistStore.playlists
 
@@ -78,9 +92,28 @@ class DesktopViewModel(private val scope: CoroutineScope) {
     var userPlaylists by mutableStateOf<List<PlaylistItem>>(emptyList())
         private set
 
+    // ── Liked songs (YTMusic library playlist "LM") ──
+    var likedSongsPage by mutableStateOf<PlaylistPage?>(null)
+        private set
+    var likedSongsLoading by mutableStateOf(false)
+        private set
+    var likedSongsError by mutableStateOf<String?>(null)
+        private set
+
     // ── Liked song IDs (local — used for search boost + heart icon) ──
     var likedSongIds by mutableStateOf<Set<String>>(emptySet())
         private set
+
+    // ── Sidebar playlist reorder order ──
+    var sidebarPlaylistOrder by mutableStateOf<List<String>>(DesktopPreferences.load().sidebarPlaylistOrder)
+        private set
+
+    fun updateSidebarPlaylistOrder(newOrder: List<String>) {
+        sidebarPlaylistOrder = newOrder
+        DesktopPreferences.save(
+            DesktopPreferences.load().copy(sidebarPlaylistOrder = newOrder)
+        )
+    }
 
     init {
         initYouTube()
@@ -95,7 +128,31 @@ class DesktopViewModel(private val scope: CoroutineScope) {
             isLoggedIn = config.cookie.contains("SAPISID")
             accountName = config.accountName.ifBlank { null }
             accountEmail = config.accountEmail.ifBlank { null }
-            if (isLoggedIn) loadUserPlaylists()
+            if (isLoggedIn) {
+                loadUserPlaylists()
+                loadLikedSongs()
+            }
+        }
+    }
+
+    /** Load user's liked songs from YTMusic library ("LM") — requires login. */
+    fun loadLikedSongs(force: Boolean = false) {
+        if (!isLoggedIn) return
+        if (likedSongsPage != null && !force && !likedSongsLoading) return
+        likedSongsLoading = true
+        likedSongsError = null
+        scope.launch(Dispatchers.IO) {
+            YouTube.playlist("LM").onSuccess { page ->
+                likedSongsPage = page
+                likedSongsLoading = false
+                val ids = page.songs.map { it.id }.toSet()
+                if (ids.isNotEmpty()) {
+                    likedSongIds = likedSongIds + ids
+                }
+            }.onFailure { err ->
+                likedSongsError = err.message ?: "Failed to load liked songs"
+                likedSongsLoading = false
+            }
         }
     }
 
@@ -233,6 +290,46 @@ class DesktopViewModel(private val scope: CoroutineScope) {
         return LocalPlaylistStore.addSongToPlaylist(playlistId, song)
     }
 
+    fun importSpotifyPlaylist(url: String) {
+        if (externalImportLoading) return
+        externalImportLoading = true
+        externalImportError = null
+        externalPlaylist = null
+        externalMatches = emptyList()
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val playlist = SpotifyPlaylistImporter().import(url)
+                val matches = PlaylistMatcher().match(playlist.tracks)
+                playlist to matches
+            }.onSuccess { (playlist, matches) ->
+                externalPlaylist = playlist
+                externalMatches = matches
+                externalImportLoading = false
+            }.onFailure { error ->
+                externalImportError = error.message ?: "Gagal membaca playlist Spotify."
+                externalImportLoading = false
+            }
+        }
+    }
+
+    fun clearExternalImport() {
+        externalPlaylist = null
+        externalMatches = emptyList()
+        externalImportError = null
+        externalImportLoading = false
+    }
+
+    fun createLocalPlaylistFromMatches(name: String, matches: List<MatchedTrack>): LocalPlaylist? {
+        val playlist = createLocalPlaylist(name) ?: return null
+        val songs = matches.mapNotNull { match ->
+            match.youtubeId?.let { id ->
+                PlayerSong(id, match.youtubeTitle ?: match.source.title, match.youtubeArtist ?: match.source.artist, match.albumArt, match.durationMs)
+            }
+        }
+        LocalPlaylistStore.addSongsToPlaylist(playlist.id, songs)
+        return LocalPlaylistStore.getPlaylist(playlist.id)
+    }
+
     fun removeSongFromLocalPlaylist(playlistId: String, songId: String) {
         LocalPlaylistStore.removeSongFromPlaylist(playlistId, songId)
     }
@@ -329,6 +426,7 @@ class DesktopViewModel(private val scope: CoroutineScope) {
                 )
                 loadHome(force = true)
                 loadUserPlaylists()
+                loadLikedSongs(force = true)
                 onSuccess()
             }.onFailure { error ->
                 YouTube.cookie = previousCookie
@@ -355,6 +453,8 @@ class DesktopViewModel(private val scope: CoroutineScope) {
         accountName = null
         accountEmail = null
         userPlaylists = emptyList()
+        likedSongsPage = null
+        likedSongIds = emptySet()
         val config = DesktopPreferences.load().copy(
             cookie = "", visitorData = "", dataSyncId = "",
             accountName = "", accountEmail = "",

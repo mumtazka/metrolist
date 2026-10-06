@@ -26,6 +26,7 @@ data class DesktopConfig(
     val lyricsPanelHeightDp: Float = 360f,
     val audioCacheSizeMb: Int = 100,
     val dynamicColorFromAlbumArt: Boolean = true,
+    val sidebarPlaylistOrder: List<String> = emptyList(),
 )
 
 object DesktopPreferences {

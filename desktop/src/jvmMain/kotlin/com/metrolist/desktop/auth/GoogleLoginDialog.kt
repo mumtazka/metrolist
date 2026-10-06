@@ -13,8 +13,11 @@ import java.awt.Dimension
 import java.net.CookieHandler
 import java.net.CookieManager
 import java.net.CookiePolicy
+import java.net.CookieStore
 import java.net.HttpCookie
 import java.net.URI
+import java.util.Timer
+import java.util.TimerTask
 import java.awt.Desktop as AwtDesktop
 import com.metrolist.desktop.viewmodel.DesktopViewModel
 
@@ -55,6 +58,65 @@ fun showGoogleLoginDialog(viewModel: DesktopViewModel, onComplete: () -> Unit = 
                 jfxPanel.scene = Scene(root, 750.0, 800.0)
 
                 var isCompletingLogin = false
+                var loginAttempts = 0
+                var loginScheduled = false
+
+                fun attemptLogin() {
+                    if (isCompletingLogin || loginScheduled) return
+                    val currentUrl = webEngine.location
+                    if (currentUrl == null || !currentUrl.startsWith("https://music.youtube.com")) return
+
+                    val visitorData = readPageConfigValue(webEngine, "VISITOR_DATA")
+                    val dataSyncId = readPageConfigValue(webEngine, "DATASYNC_ID").substringBefore("||")
+                    val cookieString = collectSessionCookies(manager)
+
+                    if (!cookieString.contains("SAPISID")) {
+                        loginAttempts++
+                        if (loginAttempts < 20) {
+                            loginScheduled = true
+                            println("[GoogleLoginDialog] SAPISID cookie not available yet (attempt $loginAttempts). Retrying...")
+                            Timer("metrolist-login-retry", true).schedule(object : TimerTask() {
+                                override fun run() {
+                                    loginScheduled = false
+                                    Platform.runLater { attemptLogin() }
+                                }
+                            }, 750)
+                        } else {
+                            println("[GoogleLoginDialog] Timed out waiting for SAPISID cookie.")
+                        }
+                        return
+                    }
+
+                    isCompletingLogin = true
+                    SwingUtilities.invokeLater {
+                        dialog.title = "Finishing Google Sign-In..."
+                    }
+                    println("[GoogleLoginDialog] Validating Google session with InnerTube...")
+
+                    viewModel.loginWithCookie(
+                        cookie = cookieString,
+                        visitorData = visitorData,
+                        dataSyncId = dataSyncId,
+                        onSuccess = {
+                            SwingUtilities.invokeLater {
+                                dialog.dispose()
+                                onComplete()
+                            }
+                        },
+                        onFailure = { message ->
+                            isCompletingLogin = false
+                            SwingUtilities.invokeLater {
+                                dialog.title = "Sign In with Google"
+                                JOptionPane.showMessageDialog(
+                                    dialog,
+                                    message,
+                                    "Google Sign-In Failed",
+                                    JOptionPane.ERROR_MESSAGE,
+                                )
+                            }
+                        },
+                    )
+                }
 
                 webEngine.loadWorker.stateProperty().addListener { _, oldState, newState ->
                     val currentUrl = webEngine.location
@@ -64,49 +126,10 @@ fun showGoogleLoginDialog(viewModel: DesktopViewModel, onComplete: () -> Unit = 
                     if (
                         newState == Worker.State.SUCCEEDED &&
                         currentUrl != null &&
-                        currentUrl.startsWith("https://music.youtube.com") &&
-                        !isCompletingLogin
+                        currentUrl.startsWith("https://music.youtube.com")
                     ) {
                         println("[GoogleLoginDialog] Successfully reached YouTube Music. Extracting session context...")
-
-                        val visitorData = readPageConfigValue(webEngine, "VISITOR_DATA")
-                        val dataSyncId = readPageConfigValue(webEngine, "DATASYNC_ID").substringBefore("||")
-                        val cookieString = collectSessionCookies(manager)
-
-                        if (!cookieString.contains("SAPISID")) {
-                            println("[GoogleLoginDialog] SAPISID cookie not available yet.")
-                            return@addListener
-                        }
-
-                        isCompletingLogin = true
-                        SwingUtilities.invokeLater {
-                            dialog.title = "Finishing Google Sign-In..."
-                        }
-                        println("[GoogleLoginDialog] Validating Google session with InnerTube...")
-
-                        viewModel.loginWithCookie(
-                            cookie = cookieString,
-                            visitorData = visitorData,
-                            dataSyncId = dataSyncId,
-                            onSuccess = {
-                                SwingUtilities.invokeLater {
-                                    dialog.dispose()
-                                    onComplete()
-                                }
-                            },
-                            onFailure = { message ->
-                                isCompletingLogin = false
-                                SwingUtilities.invokeLater {
-                                    dialog.title = "Sign In with Google"
-                                    JOptionPane.showMessageDialog(
-                                        dialog,
-                                        message,
-                                        "Google Sign-In Failed",
-                                        JOptionPane.ERROR_MESSAGE,
-                                    )
-                                }
-                            },
-                        )
+                        attemptLogin()
                     }
                 }
 
@@ -172,8 +195,22 @@ private fun readPageConfigValue(webEngine: javafx.scene.web.WebEngine, key: Stri
     }
 }
 
+/**
+ * JavaFX WebView keeps its cookies in its own internal store
+ * (`com.sun.webkit.network.CookieManager`, a java.net.CookieManager subclass),
+ * NOT in the `java.net.CookieHandler` default manager. That internal store is
+ * reachable through a static `getDefault()`; we mirror it via reflection so the
+ * Google login cookies can be collected after sign-in.
+ */
+private fun javafxWebViewCookieStore(): CookieStore? = runCatching {
+    val clazz = Class.forName("com.sun.webkit.network.CookieManager")
+    val getDefault = clazz.getMethod("getDefault")
+    (getDefault.invoke(null) as CookieManager).cookieStore
+}.getOrNull()
+
 private fun collectSessionCookies(manager: CookieManager): String {
     val collected = linkedSetOf<HttpCookie>()
+    val stores = listOfNotNull(javafxWebViewCookieStore(), manager.cookieStore)
     val targetUris = listOf(
         URI("https://music.youtube.com"),
         URI("https://www.youtube.com"),
@@ -182,17 +219,19 @@ private fun collectSessionCookies(manager: CookieManager): String {
         URI("https://google.com"),
     )
 
-    targetUris.forEach { uri ->
-        runCatching { manager.cookieStore.get(uri) }
-            .onSuccess { collected.addAll(it) }
-    }
-
-    runCatching {
-        manager.cookieStore.cookies.filter { cookie ->
-            val domain = cookie.domain?.lowercase().orEmpty()
-            domain.contains("youtube") || domain.contains("google")
+    stores.forEach { store ->
+        targetUris.forEach { uri ->
+            runCatching { store.get(uri) }
+                .onSuccess { collected.addAll(it) }
         }
-    }.onSuccess { collected.addAll(it) }
+
+        runCatching {
+            store.cookies.filter { cookie ->
+                val domain = cookie.domain?.lowercase().orEmpty()
+                domain.contains("youtube") || domain.contains("google")
+            }
+        }.onSuccess { collected.addAll(it) }
+    }
 
     return collected
         .groupBy { it.name }
