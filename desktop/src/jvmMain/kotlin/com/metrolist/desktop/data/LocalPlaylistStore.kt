@@ -1,6 +1,9 @@
 package com.metrolist.desktop.data
 
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.metrolist.desktop.player.PlayerSong
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -41,6 +44,9 @@ data class LocalPlaylist(
 )
 
 object LocalPlaylistStore {
+    var revision by mutableStateOf(0L)
+        private set
+
     val playlists = mutableStateListOf<LocalPlaylist>()
 
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
@@ -63,6 +69,7 @@ object LocalPlaylistStore {
         }.onSuccess { stored ->
             playlists.clear()
             playlists.addAll(stored.sortedByDescending { it.updatedAt })
+            revision++
         }.onFailure { error ->
             println("[Playlist] Failed to load playlists: ${error.message}")
         }
@@ -79,7 +86,10 @@ object LocalPlaylistStore {
         }
     }
 
-    fun getPlaylist(playlistId: String): LocalPlaylist? = playlists.firstOrNull { it.id == playlistId }
+    fun getPlaylist(playlistId: String): LocalPlaylist? {
+        val rev = revision
+        return playlists.firstOrNull { it.id == playlistId }
+    }
 
     fun createPlaylist(name: String): LocalPlaylist {
         val now = System.currentTimeMillis()
@@ -91,6 +101,7 @@ object LocalPlaylistStore {
             updatedAt = now,
         )
         playlists.add(0, playlist)
+        revision++
         save()
         return playlist
     }
@@ -106,6 +117,7 @@ object LocalPlaylistStore {
 
     fun deletePlaylist(playlistId: String) {
         playlists.removeAll { it.id == playlistId }
+        revision++
         save()
     }
 
@@ -165,6 +177,7 @@ object LocalPlaylistStore {
         } else {
             playlists[0] = updated
         }
+        revision++
         save()
     }
 }

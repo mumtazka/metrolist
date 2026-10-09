@@ -82,8 +82,14 @@ class DesktopViewModel(private val scope: CoroutineScope) {
     var externalImportError by mutableStateOf<String?>(null)
         private set
 
+    val localPlaylistsRevision: Long
+        get() = LocalPlaylistStore.revision
+
     val localPlaylists: List<LocalPlaylist>
-        get() = LocalPlaylistStore.playlists
+        get() {
+            val rev = LocalPlaylistStore.revision
+            return LocalPlaylistStore.playlists.toList()
+        }
 
     val currentLocalPlaylist: LocalPlaylist?
         get() = currentLocalPlaylistId?.let(LocalPlaylistStore::getPlaylist)
@@ -107,6 +113,39 @@ class DesktopViewModel(private val scope: CoroutineScope) {
     // ── Sidebar playlist reorder order ──
     var sidebarPlaylistOrder by mutableStateOf<List<String>>(DesktopPreferences.load().sidebarPlaylistOrder)
         private set
+
+    // ── Text input focus tracking (for global spacebar play/pause shortcut) ──
+    var isTextInputActive by mutableStateOf(false)
+
+    // ── Recent searches (persisted, newest-first, max 10) ──
+    var recentSearches by mutableStateOf<List<com.metrolist.desktop.auth.RecentSearchEntry>>(
+        DesktopPreferences.load().recentSearches
+    )
+        private set
+
+    /**
+     * Record a played search result so it appears in the recent-searches dropdown.
+     * Deduplicates by [videoId] and caps the list at 10 entries.
+     */
+    fun addRecentSearch(entry: com.metrolist.desktop.auth.RecentSearchEntry) {
+        val updated = (listOf(entry) + recentSearches.filter { it.videoId != entry.videoId })
+            .take(10)
+        recentSearches = updated
+        DesktopPreferences.save(DesktopPreferences.load().copy(recentSearches = updated))
+    }
+
+    /** Remove a single entry from recent searches by video ID. */
+    fun removeRecentSearch(videoId: String) {
+        val updated = recentSearches.filter { it.videoId != videoId }
+        recentSearches = updated
+        DesktopPreferences.save(DesktopPreferences.load().copy(recentSearches = updated))
+    }
+
+    /** Clear all recent searches. */
+    fun clearRecentSearches() {
+        recentSearches = emptyList()
+        DesktopPreferences.save(DesktopPreferences.load().copy(recentSearches = emptyList()))
+    }
 
     fun updateSidebarPlaylistOrder(newOrder: List<String>) {
         sidebarPlaylistOrder = newOrder
@@ -178,15 +217,42 @@ class DesktopViewModel(private val scope: CoroutineScope) {
         }
         searchLoading = true
         scope.launch(Dispatchers.IO) {
-            YouTube.searchSummary(query).onSuccess { page ->
-                val raw = page.summaries.flatMap { it.items }
-                // Apply client-side re-ranking for better result ordering
-                searchResults = SearchRanker.rankResults(raw, query, likedSongIds)
-                searchLoading = false
-            }.onFailure {
+            try {
+                // Phase 1: fire searchSummary and FILTER_SONG in parallel
+                coroutineScope {
+                    val summaryDeferred = async {
+                        YouTube.searchSummary(query).getOrNull()
+                            ?.summaries?.flatMap { it.items } ?: emptyList()
+                    }
+                    val songFilterDeferred = async {
+                        YouTube.search(query, YouTube.SearchFilter.FILTER_SONG).getOrNull()
+                            ?.items ?: emptyList()
+                    }
+
+                    val summaryItems = summaryDeferred.await()
+                    val filteredSongs = songFilterDeferred.await()
+
+                    // Phase 2: merge, deduplicate (summary takes precedence)
+                    val seenIds = summaryItems.map { it.id }.toMutableSet()
+                    val extraSongs = filteredSongs.filter { seenIds.add(it.id) }
+                    val merged = summaryItems + extraSongs
+
+                    // Phase 3: detect primary artist → fetch more of their songs as filler
+                    val primaryArtistName = SearchRanker.detectPrimaryArtist(merged, query)
+                    val artistFill = if (primaryArtistName != null) {
+                        YouTube.search(primaryArtistName, YouTube.SearchFilter.FILTER_SONG)
+                            .getOrNull()?.items?.filter { seenIds.add(it.id) } ?: emptyList()
+                    } else emptyList()
+
+                    // Phase 4: 3-tier rank — title match → artist fill → rest
+                    searchResults = SearchRanker.rankResultsWithArtistFill(
+                        merged + artistFill, query, likedSongIds
+                    )
+                }
+            } catch (e: Exception) {
                 searchResults = emptyList()
-                searchLoading = false
             }
+            searchLoading = false
         }
     }
 

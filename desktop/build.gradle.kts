@@ -76,10 +76,30 @@ compose.desktop {
             linux {
                 iconFile.set(project.file("src/jvmMain/resources/icon.png"))
             }
+
             windows {
                 iconFile.set(project.file("src/jvmMain/resources/icon.ico"))
+
+                // Start Menu folder (e.g. Start → Metrolist → Metrolist)
                 menuGroup = "Metrolist"
+
+                // Create a Desktop shortcut during install
+                shortcut = true
+
+                // Show the directory chooser page so users can pick their install location
+                dirChooser = true
+
+                // Install per-user by default — no UAC/admin prompt required
+                perUserInstall = true
+
+                // Stable UUID so Windows Installer can properly upgrade or uninstall.
+                // IMPORTANT: this must never change between releases.
+                upgradeUuid = "8F3A2E1D-4B7C-4F9A-8C2D-1E5A3B9F7D4E"
+
+                // Do not open a console window alongside the GUI
+                console = false
             }
         }
     }
 }
+

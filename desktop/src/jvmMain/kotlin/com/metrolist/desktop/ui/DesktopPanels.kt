@@ -25,6 +25,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -35,9 +36,16 @@ import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
 import com.metrolist.desktop.data.AppUpdater
 import com.metrolist.desktop.data.LocalPlaylist
@@ -76,15 +84,15 @@ fun LeftSidebarPanel(
     onPlaylistSelected: (PlaylistItem) -> Unit,
     onLocalPlaylistSelected: (LocalPlaylist) -> Unit,
     onCreatePlaylist: () -> Unit,
-    onImportPlaylist: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val playlists = viewModel.userPlaylists
+    val localPlaylistsRevision = viewModel.localPlaylistsRevision
     val localPlaylists = viewModel.localPlaylists
     val scrollState = rememberLazyListState()
 
     val currentOrder = viewModel.sidebarPlaylistOrder
-    val orderedPlaylistItems = remember(localPlaylists, currentOrder) {
+    val orderedPlaylistItems = remember(localPlaylistsRevision, currentOrder) {
         buildOrderedSidebarItems(localPlaylists, currentOrder)
     }
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
@@ -169,17 +177,6 @@ fun LeftSidebarPanel(
                     Icon(
                         Icons.Rounded.Add,
                         "Create playlist",
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                IconButton(
-                    onClick = onImportPlaylist,
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Rounded.Input,
-                        "Import playlist",
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -832,111 +829,350 @@ fun TopBar(
     onQueryChange: (String) -> Unit,
     onSearchFocused: () -> Unit,
     viewModel: DesktopViewModel,
+    canGoBack: Boolean = false,
+    canGoForward: Boolean = false,
+    onBack: () -> Unit = {},
+    onForward: () -> Unit = {},
+    onRecentSearchPlay: (com.metrolist.desktop.auth.RecentSearchEntry) -> Unit = {},
+    onSearchBoundsChanged: (Rect?) -> Unit = {},
+    onDropdownBoundsChanged: (Rect?) -> Unit = {},
 ) {
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val density = LocalDensity.current
+    var searchBarWidthDp by remember { mutableStateOf(0.dp) }
+    var isGlobalSearchFocused by remember { mutableStateOf(false) }
+
+    // This must be tied to this field only. `isTextInputActive` also tracks dialog
+    // fields so global keyboard shortcuts can be disabled while typing.
+    val showRecentDropdown = isGlobalSearchFocused && searchQuery.isBlank()
+        && viewModel.recentSearches.isNotEmpty()
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // Search field — pill shaped, centered, M3 Expressive
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = {
-                    onQueryChange(it)
-                    if (it.isNotBlank()) onSearchFocused()
-                },
-                placeholder = {
-                    Text(
-                        "Search songs, artists, albums...",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                },
+        Column {
+            Row(
                 modifier = Modifier
-                    .weight(1f)
-                    .clickable { onSearchFocused() },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor   = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.75f),
-                    focusedBorderColor      = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor    = Color.Transparent,
-                    cursorColor             = MaterialTheme.colorScheme.primary,
-                ),
-                shape = RoundedCornerShape(28.dp),
-                singleLine = true,
-                leadingIcon = {
-                    Icon(
-                        Icons.Rounded.Search, "Search",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp),
-                    )
-                },
-                trailingIcon = {
-                    AnimatedVisibility(searchQuery.isNotBlank()) {
-                        IconButton(onClick = { onQueryChange("") }) {
-                            Icon(Icons.Rounded.Close, "Clear", modifier = Modifier.size(18.dp))
-                        }
-                    }
-                },
-            )
-
-            Spacer(Modifier.width(16.dp))
-
-            // Account badge
-            if (viewModel.isLoggedIn) {
-                val initials = viewModel.accountName
-                    ?.split(" ")?.mapNotNull { it.firstOrNull()?.uppercaseChar() }
-                    ?.take(2)?.joinToString("") ?: "?"
-                Box(
-                    Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer)
-                        .border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), CircleShape),
-                    contentAlignment = Alignment.Center,
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // ── Back / Forward navigation buttons ──────────────────────────
+                IconButton(
+                    onClick = onBack,
+                    enabled = canGoBack,
+                    modifier = Modifier.size(36.dp),
                 ) {
-                    Text(
-                        initials,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        fontSize = 13.sp,
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = "Back",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurface.copy(
+                            alpha = if (canGoBack) 1f else 0.38f,
+                        ),
                     )
                 }
-            } else {
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                IconButton(
+                    onClick = onForward,
+                    enabled = canGoForward,
+                    modifier = Modifier.size(36.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                        contentDescription = "Forward",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurface.copy(
+                            alpha = if (canGoForward) 1f else 0.38f,
+                        ),
+                    )
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                Box(modifier = Modifier.weight(1f)) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = {
+                            onQueryChange(it)
+                            if (it.isNotBlank()) onSearchFocused()
+                        },
+                        placeholder = {
+                            Text(
+                                "Search songs, artists, albums...",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        },
+                        modifier = Modifier
+                            .widthIn(max = 560.dp)
+                            .fillMaxWidth()
+                            .onGloballyPositioned { coordinates ->
+                                searchBarWidthDp = with(density) { coordinates.size.width.toDp() }
+                                onSearchBoundsChanged(coordinates.boundsInRoot())
+                            }
+                            .onFocusChanged { focusState ->
+                                isGlobalSearchFocused = focusState.isFocused
+                                viewModel.isTextInputActive = focusState.isFocused
+                                if (!focusState.isFocused) {
+                                    onDropdownBoundsChanged(null)
+                                }
+                            }
+                            .clickable { onSearchFocused() }
+                            .onPreviewKeyEvent { event ->
+                                // Escape dismisses search focus
+                                if (event.type == androidx.compose.ui.input.key.KeyEventType.KeyDown
+                                    && event.key == androidx.compose.ui.input.key.Key.Escape
+                                ) {
+                                    focusManager.clearFocus()
+                                    isGlobalSearchFocused = false
+                                    viewModel.isTextInputActive = false
+                                    onDropdownBoundsChanged(null)
+                                    true
+                                } else false
+                            },
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                            onSearch = { focusManager.clearFocus() },
+                            onDone = { focusManager.clearFocus() },
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor   = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.75f),
+                            focusedBorderColor      = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor    = Color.Transparent,
+                            cursorColor             = MaterialTheme.colorScheme.primary,
+                        ),
+                        shape = RoundedCornerShape(28.dp),
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(
+                                Icons.Rounded.Search, "Search",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        },
+                        trailingIcon = {
+                            androidx.compose.animation.AnimatedVisibility(searchQuery.isNotBlank()) {
+                                IconButton(onClick = { onQueryChange("") }) {
+                                    Icon(Icons.Rounded.Close, "Clear", modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        },
+                    )
+
+                    // ── Spotify-style Floating Recent Searches Dropdown ──
+                    if (showRecentDropdown && searchBarWidthDp > 0.dp) {
+                        Popup(
+                            alignment = Alignment.TopStart,
+                            offset = IntOffset(x = 0, y = with(density) { 56.dp.roundToPx() }),
+                            onDismissRequest = {
+                                focusManager.clearFocus()
+                                isGlobalSearchFocused = false
+                                viewModel.isTextInputActive = false
+                                onDropdownBoundsChanged(null)
+                            },
+                            properties = PopupProperties(
+                                focusable = false,
+                                dismissOnClickOutside = true,
+                                dismissOnBackPress = true,
+                            ),
+                        ) {
+                            Surface(
+                                modifier = Modifier
+                                    .width(searchBarWidthDp)
+                                    .heightIn(max = 420.dp)
+                                    .onGloballyPositioned { coordinates ->
+                                        onDropdownBoundsChanged(coordinates.boundsInRoot())
+                                    },
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                tonalElevation = 6.dp,
+                                shadowElevation = 16.dp,
+                                border = BorderStroke(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                ),
+                            ) {
+                                Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Text(
+                                            text = "Recent searches",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                        Text(
+                                            text = "Clear all",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .clickable { viewModel.clearRecentSearches() }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
+
+                                    LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                                        items(viewModel.recentSearches, key = { it.videoId }) { entry ->
+                                            RecentSearchRow(
+                                                entry = entry,
+                                                onClick = {
+                                                    focusManager.clearFocus()
+                                                    isGlobalSearchFocused = false
+                                                    viewModel.isTextInputActive = false
+                                                    onDropdownBoundsChanged(null)
+                                                    onRecentSearchPlay(entry)
+                                                },
+                                                onRemove = {
+                                                    viewModel.removeRecentSearch(entry.videoId)
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.width(16.dp))
+
+                // Account badge
+                if (viewModel.isLoggedIn) {
+                    val initials = viewModel.accountName
+                        ?.split(" ")?.mapNotNull { it.firstOrNull()?.uppercaseChar() }
+                        ?.take(2)?.joinToString("") ?: "?"
+                    Box(
+                        Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), CircleShape),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Icon(
-                            Icons.AutoMirrored.Rounded.Login, "Sign in",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
                         Text(
-                            "Sign In",
+                            initials,
                             style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            fontSize = 13.sp,
                         )
+                    }
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Rounded.Login, "Sign in",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Sign In",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                     }
                 }
             }
-        }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+        }
+    }
+}
+
+/** A single row in the recent-searches dropdown (Spotify-style). */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun RecentSearchRow(
+    entry: com.metrolist.desktop.auth.RecentSearchEntry,
+    onClick: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    var hovered by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (hovered) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent,
+            )
+            .clickable(onClick = onClick)
+            .onPointerEvent(PointerEventType.Enter) { hovered = true }
+            .onPointerEvent(PointerEventType.Exit)  { hovered = false }
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Thumbnail
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (entry.thumbnailUrl != null) {
+                AsyncImage(
+                    url = entry.thumbnailUrl,
+                    contentDescription = entry.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Icon(
+                    Icons.Rounded.MusicNote, null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = entry.title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "Song • ${entry.artistName}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(
+            onClick = onRemove,
+            modifier = Modifier.size(32.dp),
+        ) {
+            Icon(
+                Icons.Rounded.Close,
+                contentDescription = "Remove",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (hovered) 0.9f else 0.4f),
+                modifier = Modifier.size(16.dp),
+            )
+        }
     }
 }
 

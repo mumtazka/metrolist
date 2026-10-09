@@ -67,7 +67,16 @@ class PlayerState {
 
     private var positionJob: Job? = null
     private var resolveJob: Job? = null
+    private var preloadJob: Job? = null
+    private var retryJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+    /** Monotonically increasing token that makes stale resolver callbacks harmless. */
+    private var playbackGeneration = 0L
+
+    /** How many consecutive stream re-resolve retries have been attempted for the current song. */
+    private var streamRetryCount = 0
+    private var preparedNext: PlayerSong? = null
     private val poTokenGenerator = PoTokenGenerator()
     private val mpv = MpvAudioPlayer()
     private val httpClient = OkHttpClient.Builder()
@@ -104,31 +113,13 @@ class PlayerState {
             isPlaying = true
             isLoadingStream = false
             streamError = null
+            streamRetryCount = 0
+            com.metrolist.desktop.data.StreamCache.setPlaybackActive(true)
+            preloadNextTrack()
         }
 
         mpv.onTrackEnd = { success ->
-            if (isLoadingStream) {
-                println("[Player] onTrackEnd fired while loading stream (success=$success) — reporting failure")
-                isLoadingStream = false
-                isPlaying = false
-                if (!success) {
-                    streamError = "Stream playback failed"
-                }
-            } else {
-                isPlaying = false
-                if (!success && currentPosition < 1000) {
-                    streamError = "Playback failed"
-                    isLoadingStream = false
-                } else {
-                    when (repeatMode) {
-                        RepeatMode.ONE -> currentSong?.let { playSong(it) }
-                        RepeatMode.ALL -> skipNext()
-                        RepeatMode.OFF -> {
-                            if (queueIndex < queue.size - 1) skipNext()
-                        }
-                    }
-                }
-            }
+            if (success) handleTrackCompleted() else scheduleRecovery("Stream interrupted")
         }
 
         scope.launch(Dispatchers.IO) {
@@ -154,14 +145,20 @@ class PlayerState {
     fun playSong(song: PlayerSong) {
         // Cancel any previous resolve/lyrics jobs
         resolveJob?.cancel()
+        preloadJob?.cancel()
+        retryJob?.cancel()
         lyricsJob?.cancel()
 
+        val generation = ++playbackGeneration
+        streamRetryCount = 0
+        preparedNext = null
         currentSong = song
         duration = song.durationMs
         currentPosition = 0L
         isPlaying = false
         streamError = null
         isLoadingStream = true
+        com.metrolist.desktop.data.StreamCache.setPlaybackActive(true)
         lyrics = emptyList()
         currentLyricIndex = -1
 
@@ -179,7 +176,7 @@ class PlayerState {
                 mpv.setVolume((volume * 100).toInt())
                 // isPlaying / isLoadingStream set by onPlaybackStarted
             } else {
-                resolveAndPlay(song.id, mediaTitle)
+                resolveAndPlay(song.id, mediaTitle, generation = generation)
             }
         }
 
@@ -203,7 +200,13 @@ class PlayerState {
      * All clients are launched IN PARALLEL — the first one that returns a valid URL wins.
      * This dramatically reduces start-up latency from ~5s (sequential) to ~1s.
      */
-    private suspend fun resolveAndPlay(videoId: String, mediaTitle: String?) {
+    private suspend fun resolveAndPlay(
+        videoId: String,
+        mediaTitle: String?,
+        generation: Long = playbackGeneration,
+        resumePositionMs: Long = 0L,
+        preload: Boolean = false,
+    ) {
         println("[Player] Resolving stream for videoId=$videoId (parallel, ${streamClients.size} clients)")
         println("[Player] Cipher deobfuscator initialized=${DesktopCipherDeobfuscator.isInitialized()}")
 
@@ -365,17 +368,13 @@ class PlayerState {
 
         if (winner == null) {
             println("[Player] All clients failed for videoId=$videoId")
-            isLoadingStream = false
-            streamError = buildString {
-                append("Could not get audio stream")
-                if (failureReasons.isNotEmpty()) {
-                    append(": ")
-                    append(failureReasons.joinToString("; "))
-                }
+            if (!preload && isCurrent(generation, videoId)) {
+                scheduleRecovery("Waiting for network: ${failureReasons.firstOrNull() ?: "no playable stream"}")
             }
-            isPlaying = false
             return
         }
+
+        if (!isCurrent(generation, videoId) && !preload) return
 
         // Apply n-transform to the stream URL to avoid throttling.
         // Any URL containing an 'n' parameter needs this transform, regardless of client type.
@@ -407,27 +406,18 @@ class PlayerState {
             }
         }
 
+        if (preload) return
+
         winner.durationMs?.let { duration = it }
-        println("[Player] Playing URL with client=${winner.clientName} (length=${finalUrl.take(80)}...)")
+        println("[Player] Playing URL with client=${winner.clientName}")
         mpv.play(finalUrl, winner.clientName, mediaTitle)
         mpv.setVolume((volume * 100).toInt())
-        // isPlaying and isLoadingStream will be set by mpv.onPlaybackStarted
-        // once mpv actually starts outputting audio
-
-        // Safety timeout: if mpv doesn't start within 30s, report error
-        scope.launch {
-            kotlinx.coroutines.delay(30_000)
-            if (isLoadingStream) {
-                println("[Player] Playback timeout: mpv did not start within 30s")
-                mpv.stop()
-                isLoadingStream = false
-                isPlaying = false
-                streamError = "Playback timed out — stream may be unavailable"
-            }
+        if (resumePositionMs > 0) {
+            mpv.seekTo((resumePositionMs - 750L).coerceAtLeast(0L) / 1000.0)
         }
 
         // Background-cache the stream so next play is instant / offline
-        currentSong?.let { song ->
+        currentSong?.takeIf { isCurrent(generation, videoId) }?.let { song ->
             com.metrolist.desktop.data.StreamCache.cacheInBackground(
                 videoId   = videoId,
                 title     = song.title,
@@ -444,6 +434,91 @@ class PlayerState {
         }
     }
 
+    private fun isCurrent(generation: Long, videoId: String): Boolean =
+        generation == playbackGeneration && currentSong?.id == videoId
+
+    private fun nextQueueIndex(): Int? = when {
+        queue.isEmpty() -> null
+        queueIndex < queue.lastIndex -> queueIndex + 1
+        repeatMode == RepeatMode.ALL -> 0
+        else -> null
+    }
+
+    /** Resolve only one queue item ahead; mpv owns the actual gapless handoff. */
+    private fun preloadNextTrack() {
+        // Keep process-per-track playback until a cross-platform persistent session is validated.
+        preparedNext = null
+    }
+
+    private fun handleTrackCompleted() {
+        isPlaying = false
+        streamRetryCount = 0
+        val prepared = preparedNext
+        if (prepared != null && nextQueueIndex()?.let { queue[it].id == prepared.id } == true) {
+            queueIndex = nextQueueIndex()!!
+            currentSong = prepared
+            currentPosition = 0L
+            duration = prepared.durationMs
+            preparedNext = null
+            streamError = null
+            isLoadingStream = false
+            loadLyrics(prepared)
+            return
+        }
+        when (repeatMode) {
+            RepeatMode.ONE -> currentSong?.let(::playSong)
+            RepeatMode.ALL -> nextQueueIndex()?.let { index ->
+                queueIndex = index
+                playSong(queue[index])
+            }
+            RepeatMode.OFF -> if (queueIndex < queue.lastIndex) skipNext() else {
+                com.metrolist.desktop.data.StreamCache.setPlaybackActive(false)
+            }
+        }
+    }
+
+    private fun scheduleRecovery(reason: String) {
+        val song = currentSong ?: return
+        val generation = playbackGeneration
+        val resumeAt = currentPosition
+        retryJob?.cancel()
+        resolveJob?.cancel()
+        preloadJob?.cancel()
+        preparedNext = null
+        mpv.stop()
+        isPlaying = false
+        isLoadingStream = true
+        com.metrolist.desktop.data.StreamCache.setPlaybackActive(true)
+        val attempt = ++streamRetryCount
+        val delayMs = when (attempt) {
+            1 -> 1_000L
+            2 -> 2_000L
+            3 -> 4_000L
+            4 -> 8_000L
+            5 -> 15_000L
+            else -> 30_000L
+        }
+        streamError = "$reason — retrying in ${delayMs / 1000}s"
+        println("[Player] $reason at ${resumeAt}ms; retry $attempt in ${delayMs}ms")
+        retryJob = scope.launch(Dispatchers.IO) {
+            delay(delayMs)
+            if (!isCurrent(generation, song.id)) return@launch
+            resolveJob = launch { resolveAndPlay(song.id, song.mediaTitle(), generation, resumeAt) }
+        }
+    }
+
+    private fun loadLyrics(song: PlayerSong) {
+        lyricsJob?.cancel()
+        lyrics = emptyList()
+        currentLyricIndex = -1
+        lyricsJob = scope.launch(Dispatchers.IO) {
+            lyricsLoading = true
+            val result = LyricsProvider.fetchLyrics(song.title, song.artist, (song.durationMs / 1000).toInt())
+            if (result != null) lyrics = result
+            lyricsLoading = false
+        }
+    }
+
     fun playQueue(songs: List<PlayerSong>, startIndex: Int = 0) {
         queue = songs
         queueIndex = startIndex
@@ -452,13 +527,9 @@ class PlayerState {
 
     fun togglePlayPause() {
         if (isPlaying) {
-            mpv.togglePause()
-            isPlaying = false
-            stopPositionUpdates()
+            pause()
         } else {
-            mpv.togglePause()
-            isPlaying = true
-            startPositionUpdates()
+            resume()
         }
     }
 
@@ -484,28 +555,54 @@ class PlayerState {
     }
 
     fun resume() {
+        if (isLoadingStream) {
+            val song = currentSong ?: return
+            retryJob?.cancel()
+            resolveJob?.cancel()
+            val generation = playbackGeneration
+            streamError = null
+            resolveJob = scope.launch(Dispatchers.IO) {
+                resolveAndPlay(song.id, song.mediaTitle(), generation, currentPosition)
+            }
+            return
+        }
         if (!isPlaying) {
-            mpv.togglePause()
+            retryJob?.cancel()
+            mpv.resume()
             isPlaying = true
             startPositionUpdates()
         }
     }
 
     fun pause() {
+        retryJob?.cancel()
+        if (isLoadingStream) {
+            resolveJob?.cancel()
+            preloadJob?.cancel()
+            isLoadingStream = false
+            streamError = null
+            return
+        }
         if (isPlaying) {
-            mpv.togglePause()
+            mpv.pause()
             isPlaying = false
             stopPositionUpdates()
         }
     }
 
     fun stop() {
+        ++playbackGeneration
+        resolveJob?.cancel()
+        preloadJob?.cancel()
+        retryJob?.cancel()
+        preparedNext = null
         mpv.stop()
         isPlaying = false
         currentPosition = 0L
         duration = 0L
         isLoadingStream = false
         streamError = null
+        com.metrolist.desktop.data.StreamCache.setPlaybackActive(false)
         stopPositionUpdates()
     }
 

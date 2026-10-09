@@ -77,6 +77,19 @@ object StreamCache {
 
     /** IDs currently being downloaded to cache (avoid double-download). */
     private val inProgress = mutableSetOf<String>()
+    private val pending = LinkedHashMap<String, CacheRequest>()
+    private var activeCacheJob: Job? = null
+    @Volatile private var playbackActive = false
+
+    private data class CacheRequest(
+        val videoId: String,
+        val title: String,
+        val artist: String,
+        val albumArt: String?,
+        val durationMs: Long,
+        val streamUrl: String,
+        val clientName: String,
+    )
 
     // ─ Clients for background stream resolution ───────────────────────────────
     private val streamClients = listOf(
@@ -153,37 +166,59 @@ object StreamCache {
         clientName: String,
     ) {
         if (maxCacheSize == CacheSize.DISABLED) return
-        if (entries.any { it.id == videoId }) return        // already cached
-        if (!inProgress.add(videoId)) return                // already downloading
+        synchronized(pending) {
+            if (entries.any { it.id == videoId } || inProgress.contains(videoId)) return
+            pending[videoId] = CacheRequest(videoId, title, artist, albumArt, durationMs, streamUrl, clientName)
+        }
+        drainPending()
+    }
 
-        scope.launch {
+    /** Playback always wins over opportunistic cache traffic. */
+    fun setPlaybackActive(active: Boolean) {
+        playbackActive = active
+        if (active) activeCacheJob?.cancel()
+        else drainPending()
+    }
+
+    private fun drainPending() {
+        if (playbackActive || maxCacheSize == CacheSize.DISABLED) return
+        val request = synchronized(pending) {
+            val next = pending.entries.firstOrNull()?.value ?: return
+            pending.remove(next.videoId)
+            if (!inProgress.add(next.videoId)) return
+            next
+        }
+
+        activeCacheJob = scope.launch {
             try {
-                val safeTitle = title.replace(Regex("[/\\\\:*?\"<>|]"), "_")
-                val outFile = File(cacheDir, "${safeTitle}-${videoId}.opus")
+                val safeTitle = request.title.replace(Regex("[/\\\\:*?\"<>|]"), "_")
+                val outFile = File(cacheDir, "${safeTitle}-${request.videoId}.opus")
 
-                println("[Cache] Caching '${title}' in background...")
-                downloadFile(streamUrl, outFile)
+                println("[Cache] Caching '${request.title}' in background...")
+                downloadFile(request.streamUrl, outFile, request.clientName)
 
                 val entry = CacheEntry(
-                    id             = videoId,
-                    title          = title,
-                    artist         = artist,
-                    albumArt       = albumArt,
-                    durationMs     = durationMs,
+                    id             = request.videoId,
+                    title          = request.title,
+                    artist         = request.artist,
+                    albumArt       = request.albumArt,
+                    durationMs     = request.durationMs,
                     localPath      = outFile.absolutePath,
                     sizeBytes      = outFile.length(),
                     lastAccessedMs = System.currentTimeMillis(),
                 )
                 entries.add(0, entry)
                 saveIndex()
-                println("[Cache] ✓ Cached '${title}' (${outFile.length() / 1024} KB)")
+                println("[Cache] ✓ Cached '${request.title}' (${outFile.length() / 1024} KB)")
 
                 // Evict if over limit
                 evictToLimit()
             } catch (e: Exception) {
-                println("[Cache] ✗ Failed to cache '$title': ${e.message}")
+                println("[Cache] ✗ Failed to cache '${request.title}': ${e.message}")
             } finally {
-                inProgress.remove(videoId)
+                synchronized(pending) { inProgress.remove(request.videoId) }
+                activeCacheJob = null
+                drainPending()
             }
         }
     }
@@ -223,27 +258,42 @@ object StreamCache {
 
     // ─ Private helpers ────────────────────────────────────────────────────────
 
-    private suspend fun downloadFile(url: String, dest: File) {
+    private suspend fun downloadFile(url: String, dest: File, clientName: String = "IOS") {
         withContext(Dispatchers.IO) {
             val connection = URL(url).openConnection() as HttpURLConnection
             connection.connectTimeout = 15_000
             connection.readTimeout    = 120_000
-            // Set a reasonable user-agent so YT doesn't block us
-            connection.setRequestProperty("User-Agent",
-                "com.google.ios.youtube/21.03.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X;)")
+            // Use a UA that matches the client which produced the stream URL so YouTube doesn't 403 us.
+            val userAgent = when {
+                clientName.contains("ANDROID") || clientName.contains("VR") ->
+                    "com.google.android.youtube/21.03.38 (Linux; U; Android 14) gzip"
+                clientName.contains("IOS") || clientName.contains("IPAD") ->
+                    "com.google.ios.youtube/21.03.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X;)"
+                else -> YouTubeClient.USER_AGENT_WEB
+            }
+            connection.setRequestProperty("User-Agent", userAgent)
             connection.connect()
 
-            val buffer = ByteArray(64 * 1024)
-            dest.parentFile?.mkdirs()
-            connection.inputStream.use { input ->
-                dest.outputStream().use { output ->
-                    var read: Int
-                    while (input.read(buffer).also { read = it } != -1) {
-                        output.write(buffer, 0, read)
+            val temporary = File(dest.parentFile, "${dest.name}.part")
+            try {
+                val buffer = ByteArray(64 * 1024)
+                dest.parentFile?.mkdirs()
+                connection.inputStream.use { input ->
+                    temporary.outputStream().use { output ->
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            currentCoroutineContext().ensureActive()
+                            output.write(buffer, 0, read)
+                        }
                     }
                 }
+                if (!temporary.renameTo(dest)) {
+                    throw IllegalStateException("Could not publish completed cache file")
+                }
+            } finally {
+                connection.disconnect()
+                if (temporary.exists() && !dest.exists()) temporary.delete()
             }
-            connection.disconnect()
         }
     }
 }
