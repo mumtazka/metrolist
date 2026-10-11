@@ -4,89 +4,686 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Metrolist - The Ultimate Playback Experience</title>
-    <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+    <title>Metrolist — Seamless playback. Everywhere.</title>
+    <meta name="description"
+        content="Metrolist is a free, open-source YouTube Music client for Android, Windows and Linux. Synced lyrics, offline cache, listen together, Material You themes.">
+    <meta name="theme-color" content="#050505">
+    <link rel="canonical" href="https://metrolist-bay.vercel.app/">
+    <link rel="icon" type="image/png" href="app-icon.png">
+    <link rel="apple-touch-icon" href="app-icon.png">
+
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://metrolist-bay.vercel.app/">
+    <meta property="og:title" content="Metrolist — Seamless playback. Everywhere.">
+    <meta property="og:description"
+        content="Free, open-source YouTube Music client for Android, Windows and Linux. Synced lyrics, offline cache, listen together.">
+    <meta property="og:image" content="app-icon.png">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Metrolist — Seamless playback. Everywhere.">
+    <meta name="twitter:description"
+        content="Free, open-source YouTube Music client for Android, Windows and Linux.">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
         rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
-    <div class="ambient-background">
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <div class="ambient-background" aria-hidden="true">
         <div class="blob blob-1"></div>
         <div class="blob blob-2"></div>
         <div class="blob blob-3"></div>
         <div class="noise-overlay"></div>
     </div>
 
-    <nav class="navbar">
+    <header class="navbar" id="navbar">
+        <div class="nav-progress" id="nav-progress" aria-hidden="true"></div>
         <div class="nav-content">
-            <div class="brand">
-                <i class="ri-music-2-fill brand-icon"></i>
+            <a href="#top" class="brand">
+                <img src="app-icon.png" alt="" class="brand-app-icon" width="32" height="32">
                 <span class="brand-name">Metrolist</span>
-            </div>
+            </a>
+            <nav class="nav-links" aria-label="Primary">
+                <a href="#features" data-spy>Features</a>
+                <a href="#screenshots" data-spy>Screenshots</a>
+                <a href="#downloads" data-spy>Download</a>
+                <a href="#faq" data-spy>FAQ</a>
+            </nav>
             <a href="#downloads" class="nav-cta">Get App</a>
         </div>
-    </nav>
+    </header>
 
-    <main>
-        <section class="hero-section">
-            <div class="hero-content fade-up">
-                <div class="badge">v13.3.0 is out now</div>
-                <h1 class="hero-title">
-                    Seamless playback.<br>
-                    <span class="text-gradient">Everywhere.</span>
-                </h1>
-                <p class="hero-subtitle">
-                    Experience your music across all devices with instant sync, lossless quality, and zero
-                    interruptions. Designed for perfection.
-                </p>
-                <div class="hero-actions">
-                    <a href="#downloads" class="btn btn-primary btn-glow">
-                        <i class="ri-download-cloud-2-line"></i> Download Now
-                    </a>
-                    <a href="https://github.com/mumtazka/metrolist" target="_blank" class="btn btn-secondary">
-                        <i class="ri-github-fill"></i> View Source
-                    </a>
+    <main id="main">
+        <!-- ============ HERO ============ -->
+        <section class="hero" id="top">
+            <div class="hero-inner">
+                <div class="hero-copy">
+                    <p class="badge reveal" id="version-badge">
+                        <span class="pulse-dot" aria-hidden="true"></span>
+                        <span id="badge-text">Free &amp; open source</span>
+                    </p>
+                    <h1 class="hero-title" aria-label="Seamless playback. Everywhere.">
+                        <span class="title-line">
+                            <span class="word" style="--wd:.05s">Seamless</span>
+                            <span class="word" style="--wd:.13s">playback.</span>
+                        </span>
+                        <span class="title-line">
+                            <span class="word text-gradient" style="--wd:.21s">Everywhere.</span>
+                        </span>
+                    </h1>
+                    <p class="hero-subtitle reveal" style="--d:.35s">
+                        A free, open-source YouTube Music client for Android, Windows and Linux —
+                        with synced lyrics, offline cache and real-time listening sessions with friends.
+                    </p>
+                    <div class="hero-actions reveal" style="--d:.45s">
+                        <a href="#downloads" class="btn btn-primary magnetic">
+                            <i class="ri-download-cloud-2-line" aria-hidden="true"></i> Download Now
+                        </a>
+                        <a href="https://github.com/mumtazka/metrolist" target="_blank" rel="noopener"
+                            class="btn btn-secondary">
+                            <i class="ri-github-fill" aria-hidden="true"></i> View Source
+                        </a>
+                    </div>
+                    <ul class="hero-meta reveal" style="--d:.55s">
+                        <li><i class="ri-android-fill" aria-hidden="true"></i> Android</li>
+                        <li><i class="ri-windows-fill" aria-hidden="true"></i> Windows</li>
+                        <li><i class="ri-ubuntu-fill" aria-hidden="true"></i> Linux</li>
+                        <li><i class="ri-heart-line" aria-hidden="true"></i> 100% free</li>
+                    </ul>
+                </div>
+
+                <div class="hero-visual">
+                    <div class="glow-orb orb-1" data-parallax="18" aria-hidden="true"></div>
+                    <div class="glow-orb orb-2" data-parallax="-24" aria-hidden="true"></div>
+
+                    <div class="device-stage" id="device-stage">
+                        <div class="device-toggle" id="device-toggle" role="tablist"
+                            aria-label="Preview device">
+                            <span class="toggle-pill" aria-hidden="true"></span>
+                            <button type="button" class="device-tab" role="tab" data-device="desktop"
+                                aria-selected="false">Desktop</button>
+                            <button type="button" class="device-tab active" role="tab"
+                                data-device="mobile" aria-selected="true">Mobile</button>
+                        </div>
+
+                        <div class="device-scene" id="device-scene">
+                            <!-- Desktop preview -->
+                            <div class="device-face" data-face="desktop" data-state="off-left"
+                                aria-hidden="true">
+                                <div class="app-window app-window--mini">
+                                    <aside class="app-sidebar">
+                                        <div class="app-logo">
+                                            <img src="app-icon.png" alt="" width="22" height="22">
+                                            <span>Metrolist</span>
+                                        </div>
+                                        <span class="app-nav-item active"><i
+                                                class="ri-home-smile-2-fill"></i> Home</span>
+                                        <div class="app-pl-head"><span>Playlists</span><i
+                                                class="ri-add-line"></i></div>
+                                        <div class="app-pl-list">
+                                            <div class="app-pl-item">
+                                                <span class="app-pl-thumb app-pl-liked"><i
+                                                        class="ri-heart-fill"></i></span>
+                                                <span class="app-pl-meta"><strong>Liked
+                                                        Songs</strong><small>Auto</small></span>
+                                            </div>
+                                            <div class="app-pl-item">
+                                                <span class="app-pl-thumb app-pl-collage">
+                                                    <i style="background:linear-gradient(135deg,#8b5cf6,#ec4899)"></i>
+                                                    <i style="background:linear-gradient(135deg,#f59e0b,#ef4444)"></i>
+                                                    <i style="background:linear-gradient(135deg,#0ea5e9,#6366f1)"></i>
+                                                    <i style="background:linear-gradient(135deg,#10b981,#14b8a6)"></i>
+                                                </span>
+                                                <span class="app-pl-meta"><strong>Lana Del
+                                                        Rey</strong><small>4 songs</small></span>
+                                            </div>
+                                            <div class="app-pl-item">
+                                                <span class="app-pl-thumb"><i
+                                                        class="ri-download-cloud-2-line"></i></span>
+                                                <span class="app-pl-meta"><strong>Downloads</strong><small>Offline</small></span>
+                                            </div>
+                                        </div>
+                                        <div class="app-side-bottom">
+                                            <span class="app-nav-item"><i class="ri-headphone-line"></i>
+                                                Listen Together</span>
+                                            <span class="app-nav-item"><i class="ri-settings-3-line"></i>
+                                                Settings</span>
+                                        </div>
+                                    </aside>
+                                    <div class="app-content">
+                                        <header class="app-topbar">
+                                            <span class="app-arrows"><i
+                                                    class="ri-arrow-left-s-line"></i><i
+                                                    class="ri-arrow-right-s-line"></i></span>
+                                            <div class="app-search"><i class="ri-search-line"></i>
+                                                Search songs, artists, albums...</div>
+                                            <span class="app-signin"><i
+                                                    class="ri-login-box-line"></i> Sign In</span>
+                                        </header>
+                                        <div class="app-main">
+                                            <h4 class="app-greeting">Good evening</h4>
+                                            <p class="app-greet-sub">What do you want to listen
+                                                to?</p>
+                                            <p class="app-shelf-title">Trending community
+                                                playlists</p>
+                                            <div class="app-shelf">
+                                                <div class="app-tile">
+                                                    <span class="app-tile-art app-collage">
+                                                        <i style="background:linear-gradient(135deg,#6366f1,#a855f7)"></i>
+                                                        <i style="background:linear-gradient(135deg,#0ea5e9,#3b82f6)"></i>
+                                                        <i style="background:linear-gradient(135deg,#f59e0b,#ef4444)"></i>
+                                                        <i style="background:linear-gradient(135deg,#10b981,#14b8a6)"></i>
+                                                    </span>
+                                                    <span class="app-tile-name">Late Night
+                                                        Drive</span><span class="app-tile-sub">Nadia
+                                                        K.</span>
+                                                </div>
+                                                <div class="app-tile">
+                                                    <span class="app-tile-art app-collage">
+                                                        <i style="background:linear-gradient(135deg,#ec4899,#f59e0b)"></i>
+                                                        <i style="background:linear-gradient(135deg,#8b5cf6,#6366f1)"></i>
+                                                        <i style="background:linear-gradient(135deg,#14b8a6,#22c55e)"></i>
+                                                        <i style="background:linear-gradient(135deg,#ef4444,#a855f7)"></i>
+                                                    </span>
+                                                    <span class="app-tile-name">santai
+                                                        sore</span><span class="app-tile-sub">iru.</span>
+                                                </div>
+                                                <div class="app-tile">
+                                                    <span class="app-tile-art app-collage">
+                                                        <i style="background:linear-gradient(135deg,#0ea5e9,#14b8a6)"></i>
+                                                        <i style="background:linear-gradient(135deg,#f59e0b,#ec4899)"></i>
+                                                        <i style="background:linear-gradient(135deg,#6366f1,#3b82f6)"></i>
+                                                        <i style="background:linear-gradient(135deg,#ef4444,#f59e0b)"></i>
+                                                    </span>
+                                                    <span class="app-tile-name">butterfly
+                                                        era</span><span class="app-tile-sub">reisha</span>
+                                                </div>
+                                                <div class="app-tile">
+                                                    <span class="app-tile-art app-collage">
+                                                        <i style="background:linear-gradient(135deg,#10b981,#6366f1)"></i>
+                                                        <i style="background:linear-gradient(135deg,#ec4899,#8b5cf6)"></i>
+                                                        <i style="background:linear-gradient(135deg,#0ea5e9,#f59e0b)"></i>
+                                                        <i style="background:linear-gradient(135deg,#22c55e,#14b8a6)"></i>
+                                                    </span>
+                                                    <span class="app-tile-name">Indie
+                                                        Indo</span><span class="app-tile-sub">Bray</span>
+                                                </div>
+                                            </div>
+                                            <p class="app-shelf-title">Quick picks</p>
+                                            <div class="app-shelf">
+                                                <div class="app-tile">
+                                                    <span class="app-tile-art"
+                                                        style="background:linear-gradient(135deg,#6366f1,#a855f7)"></span>
+                                                    <span class="app-tile-name">Midnight
+                                                        Drive</span><span class="app-tile-sub">Neon
+                                                        Collective</span>
+                                                </div>
+                                                <div class="app-tile">
+                                                    <span class="app-tile-art"
+                                                        style="background:linear-gradient(135deg,#0ea5e9,#6366f1)"></span>
+                                                    <span class="app-tile-name">Glass
+                                                        Horizon</span><span class="app-tile-sub">Aurora
+                                                        Field</span>
+                                                </div>
+                                                <div class="app-tile">
+                                                    <span class="app-tile-art"
+                                                        style="background:linear-gradient(135deg,#f59e0b,#ec4899)"></span>
+                                                    <span class="app-tile-name">Paper
+                                                        Planes</span><span class="app-tile-sub">The
+                                                        Analog Kids</span>
+                                                </div>
+                                                <div class="app-tile">
+                                                    <span class="app-tile-art"
+                                                        style="background:linear-gradient(135deg,#10b981,#0ea5e9)"></span>
+                                                    <span class="app-tile-name">Static
+                                                        Bloom</span><span class="app-tile-sub">Violet
+                                                        Circuit</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Mobile preview -->
+                            <div class="device-face" data-face="mobile" data-state="active">
+                                <div class="phone-stage" id="phone-stage" aria-hidden="true">
+                                    <div class="phone-float">
+                                        <div class="phone" id="hero-phone">
+                                            <div class="phone-notch"></div>
+                                            <div class="phone-screen">
+                                                <img src="https://raw.githubusercontent.com/MetrolistGroup/Metrolist/main/fastlane/metadata/android/en-US/images/screenshots/screenshot_5.png"
+                                                    alt="" width="280" height="622" decoding="async">
+                                            </div>
+                                            <div class="phone-glare"></div>
+                                        </div>
+                                    </div>
+                                    <div class="floating-chip chip-lyrics" data-parallax="30">
+                                        <i class="ri-chat-quote-line"></i> Synced lyrics
+                                    </div>
+                                    <div class="floating-chip chip-together" data-parallax="-14">
+                                        <i class="ri-user-shared-line"></i> Listen together
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
 
-        <section id="downloads" class="downloads-section">
-            <div class="section-badge fade-up">Cross-Platform</div>
-            <h2 class="section-title fade-up">Available on all your favorite devices.</h2>
+        <!-- ============ FEATURES ============ -->
+        <section id="features" class="section">
+            <p class="section-badge reveal">Features</p>
+            <h2 class="section-title reveal">Everything a music app should be.</h2>
+            <p class="section-sub reveal">Built with Material 3, packed with the features streamers
+                actually ask for — no ads, no premium tiers, no nonsense.</p>
 
-            <div class="primary-download-wrapper fade-up hidden" id="primary-wrapper">
-                <div class="glass-card featured-card gradient-border">
-                    <div class="card-content">
-                        <div class="platform-match">
-                            <span class="pulse-dot"></span> Recommended for <span id="os-name" class="highlight">Your
-                                OS</span>
+            <div class="features-grid">
+                <article class="feature-card tilt reveal" data-tilt style="--d:.05s">
+                    <div class="feature-icon"><i class="ri-picture-in-picture-line" aria-hidden="true"></i></div>
+                    <h3>Background playback</h3>
+                    <p>Keep the music going while you chat, game or browse. Skip silence, set a sleep
+                        timer, fine-tune tempo and pitch.</p>
+                </article>
+                <article class="feature-card tilt reveal" data-tilt style="--d:.1s">
+                    <div class="feature-icon"><i class="ri-download-cloud-2-line" aria-hidden="true"></i></div>
+                    <h3>Offline cache</h3>
+                    <p>Download songs and whole playlists for flights, commutes and dead zones. Your
+                        library travels with you.</p>
+                </article>
+                <article class="feature-card tilt reveal" data-tilt style="--d:.15s">
+                    <div class="feature-icon"><i class="ri-chat-quote-line" aria-hidden="true"></i></div>
+                    <h3>Live synced lyrics</h3>
+                    <p>Word-by-word time-synced lyrics with AI-powered translation, right on the
+                        player screen.</p>
+                </article>
+                <article class="feature-card tilt reveal" data-tilt style="--d:.2s">
+                    <div class="feature-icon"><i class="ri-user-shared-line" aria-hidden="true"></i></div>
+                    <h3>Listen together</h3>
+                    <p>Start a real-time session with friends — same queue, same moment, wherever you
+                        both are.</p>
+                </article>
+                <article class="feature-card tilt reveal" data-tilt style="--d:.25s">
+                    <div class="feature-icon"><i class="ri-palette-line" aria-hidden="true"></i></div>
+                    <h3>Material You themes</h3>
+                    <p>Light, dark, black or dynamic color — plus 19 hand-tuned palettes. Make it
+                        yours in a tap.</p>
+                </article>
+                <article class="feature-card tilt reveal" data-tilt style="--d:.3s">
+                    <div class="feature-icon"><i class="ri-equalizer-line" aria-hidden="true"></i></div>
+                    <h3>Full audio control</h3>
+                    <p>System equalizer, audio normalization, precise volume gapless playback — tuned
+                        the way you like it.</p>
+                </article>
+            </div>
+        </section>
+
+        <!-- ============ SCREENSHOTS ============ -->
+        <section id="screenshots" class="section">
+            <p class="section-badge reveal">Screenshots</p>
+            <h2 class="section-title reveal">Designed down to the pixel.</h2>
+            <p class="section-sub reveal">The same Metrolist experience on your phone and your
+                computer — Material 3 through and through.</p>
+
+            <figure class="shot shot-wide reveal" data-scroll-rotate>
+                <div class="shot-frame app-shot-frame">
+                    <div class="app-window">
+                        <aside class="app-sidebar">
+                            <div class="app-logo">
+                                <img src="app-icon.png" alt="" width="26" height="26">
+                                <span>Metrolist</span>
+                            </div>
+                            <span class="app-nav-item active"><i class="ri-home-smile-2-fill"></i>
+                                Home</span>
+                            <div class="app-pl-head"><span>Playlists</span><i class="ri-add-line"></i>
+                            </div>
+                            <div class="app-pl-list">
+                                <div class="app-pl-item">
+                                    <span class="app-pl-thumb app-pl-liked"><i
+                                            class="ri-heart-fill"></i></span>
+                                    <span class="app-pl-meta"><strong>Liked
+                                            Songs</strong><small>Playlist • Auto</small></span>
+                                </div>
+                                <div class="app-pl-item">
+                                    <span class="app-pl-thumb app-pl-collage">
+                                        <i style="background:linear-gradient(135deg,#8b5cf6,#ec4899)"></i>
+                                        <i style="background:linear-gradient(135deg,#f59e0b,#ef4444)"></i>
+                                        <i style="background:linear-gradient(135deg,#0ea5e9,#6366f1)"></i>
+                                        <i style="background:linear-gradient(135deg,#10b981,#14b8a6)"></i>
+                                    </span>
+                                    <span class="app-pl-meta"><strong>Lana Del
+                                            Rey</strong><small>Playlist • 4 songs</small></span>
+                                </div>
+                                <div class="app-pl-item">
+                                    <span class="app-pl-thumb"><i
+                                            class="ri-download-cloud-2-line"></i></span>
+                                    <span class="app-pl-meta"><strong>Downloads</strong><small>Playlist
+                                            • Offline</small></span>
+                                </div>
+                                <div class="app-pl-item">
+                                    <span class="app-pl-thumb"><i class="ri-refresh-line"></i></span>
+                                    <span class="app-pl-meta"><strong>Cached</strong><small>Playlist •
+                                            54 songs</small></span>
+                                    <span class="app-pl-count">54</span>
+                                </div>
+                            </div>
+                            <p class="app-pl-hint">YouTube Playlists<br><span>Sign in to see your
+                                    YouTube playlists</span></p>
+                            <div class="app-side-bottom">
+                                <span class="app-nav-item"><i class="ri-headphone-line"></i> Listen
+                                    Together</span>
+                                <span class="app-nav-item"><i class="ri-settings-3-line"></i>
+                                    Settings</span>
+                            </div>
+                        </aside>
+                        <div class="app-content">
+                            <header class="app-topbar">
+                                <span class="app-arrows"><i class="ri-arrow-left-s-line"></i><i
+                                        class="ri-arrow-right-s-line"></i></span>
+                                <div class="app-search"><i class="ri-search-line"></i> Search songs,
+                                    artists, albums...</div>
+                                <span class="app-signin"><i class="ri-login-box-line"></i> Sign
+                                    In</span>
+                            </header>
+                            <div class="app-main">
+                                <h4 class="app-greeting">Good evening</h4>
+                                <p class="app-greet-sub">What do you want to listen to?</p>
+
+                                <p class="app-shelf-title">Trending community playlists</p>
+                                <div class="app-shelf">
+                                    <div class="app-tile">
+                                        <span class="app-tile-art app-collage">
+                                            <i style="background:linear-gradient(135deg,#6366f1,#a855f7)"></i>
+                                            <i style="background:linear-gradient(135deg,#0ea5e9,#3b82f6)"></i>
+                                            <i style="background:linear-gradient(135deg,#f59e0b,#ef4444)"></i>
+                                            <i style="background:linear-gradient(135deg,#10b981,#14b8a6)"></i>
+                                        </span>
+                                        <span class="app-tile-name">Late Night Drive</span>
+                                        <span class="app-tile-sub">Nadia K.</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art app-collage">
+                                            <i style="background:linear-gradient(135deg,#ec4899,#f59e0b)"></i>
+                                            <i style="background:linear-gradient(135deg,#8b5cf6,#6366f1)"></i>
+                                            <i style="background:linear-gradient(135deg,#14b8a6,#22c55e)"></i>
+                                            <i style="background:linear-gradient(135deg,#ef4444,#a855f7)"></i>
+                                        </span>
+                                        <span class="app-tile-name">santai sore</span>
+                                        <span class="app-tile-sub">iru.</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art app-collage">
+                                            <i style="background:linear-gradient(135deg,#0ea5e9,#14b8a6)"></i>
+                                            <i style="background:linear-gradient(135deg,#f59e0b,#ec4899)"></i>
+                                            <i style="background:linear-gradient(135deg,#6366f1,#3b82f6)"></i>
+                                            <i style="background:linear-gradient(135deg,#ef4444,#f59e0b)"></i>
+                                        </span>
+                                        <span class="app-tile-name">butterfly era</span>
+                                        <span class="app-tile-sub">reisha</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art app-collage">
+                                            <i style="background:linear-gradient(135deg,#10b981,#6366f1)"></i>
+                                            <i style="background:linear-gradient(135deg,#ec4899,#8b5cf6)"></i>
+                                            <i style="background:linear-gradient(135deg,#0ea5e9,#f59e0b)"></i>
+                                            <i style="background:linear-gradient(135deg,#22c55e,#14b8a6)"></i>
+                                        </span>
+                                        <span class="app-tile-name">Indie Indonesia</span>
+                                        <span class="app-tile-sub">Bray</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art app-collage">
+                                            <i style="background:linear-gradient(135deg,#a855f7,#ec4899)"></i>
+                                            <i style="background:linear-gradient(135deg,#3b82f6,#0ea5e9)"></i>
+                                            <i style="background:linear-gradient(135deg,#f59e0b,#22c55e)"></i>
+                                            <i style="background:linear-gradient(135deg,#ef4444,#6366f1)"></i>
+                                        </span>
+                                        <span class="app-tile-name">rainy day indie</span>
+                                        <span class="app-tile-sub">Resti L.</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art app-collage">
+                                            <i style="background:linear-gradient(135deg,#22c55e,#10b981)"></i>
+                                            <i style="background:linear-gradient(135deg,#6366f1,#8b5cf6)"></i>
+                                            <i style="background:linear-gradient(135deg,#ec4899,#ef4444)"></i>
+                                            <i style="background:linear-gradient(135deg,#0ea5e9,#14b8a6)"></i>
+                                        </span>
+                                        <span class="app-tile-name">2000an nostalgia</span>
+                                        <span class="app-tile-sub">Stevany</span>
+                                    </div>
+                                </div>
+
+                                <p class="app-shelf-title">Quick picks</p>
+                                <div class="app-shelf">
+                                    <div class="app-tile">
+                                        <span class="app-tile-art"
+                                            style="background:linear-gradient(135deg,#6366f1,#a855f7)"></span>
+                                        <span class="app-tile-name">Midnight Drive</span>
+                                        <span class="app-tile-sub">Neon Collective</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art"
+                                            style="background:linear-gradient(135deg,#0ea5e9,#6366f1)"></span>
+                                        <span class="app-tile-name">Glass Horizon</span>
+                                        <span class="app-tile-sub">Aurora Field</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art"
+                                            style="background:linear-gradient(135deg,#f59e0b,#ec4899)"></span>
+                                        <span class="app-tile-name">Paper Planes</span>
+                                        <span class="app-tile-sub">The Analog Kids</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art"
+                                            style="background:linear-gradient(135deg,#10b981,#0ea5e9)"></span>
+                                        <span class="app-tile-name">Static Bloom</span>
+                                        <span class="app-tile-sub">Violet Circuit</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art"
+                                            style="background:linear-gradient(135deg,#ef4444,#f59e0b)"></span>
+                                        <span class="app-tile-name">Ember Coast</span>
+                                        <span class="app-tile-sub">Redwood Lane</span>
+                                    </div>
+                                    <div class="app-tile">
+                                        <span class="app-tile-art"
+                                            style="background:linear-gradient(135deg,#3b82f6,#6366f1)"></span>
+                                        <span class="app-tile-name">Deep Signal</span>
+                                        <span class="app-tile-sub">Northbound</span>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
-                        <h3 class="app-name">Metrolist</h3>
-                        <p class="app-desc">Get the native experience optimized for your device.</p>
-                        <button class="btn btn-primary btn-large w-full mt-4" id="primary-btn">
-                            <i class="ri-download-line icon-spin-hover"></i> Download <span class="version">Free</span>
-                        </button>
                     </div>
+                </div>
+                <figcaption>Desktop app — Windows &amp; Linux</figcaption>
+            </figure>
+
+            <p class="shots-sublabel reveal">On mobile</p>
+            <div class="shots-row">
+                <figure class="shot reveal" data-scroll-rotate style="--d:.05s">
+                    <div class="shot-frame">
+                        <img src="https://raw.githubusercontent.com/MetrolistGroup/Metrolist/main/fastlane/metadata/android/en-US/images/screenshots/screenshot_1.png"
+                            alt="Metrolist home screen with personalized quick picks" loading="lazy"
+                            decoding="async" width="360" height="800">
+                    </div>
+                    <figcaption>Home &amp; quick picks</figcaption>
+                </figure>
+                <figure class="shot reveal" data-scroll-rotate style="--d:.15s">
+                    <div class="shot-frame">
+                        <img src="https://raw.githubusercontent.com/MetrolistGroup/Metrolist/main/fastlane/metadata/android/en-US/images/screenshots/screenshot_5.png"
+                            alt="Metrolist player screen with album art and controls" loading="lazy"
+                            decoding="async" width="360" height="800">
+                    </div>
+                    <figcaption>Player</figcaption>
+                </figure>
+                <figure class="shot reveal" data-scroll-rotate style="--d:.25s">
+                    <div class="shot-frame">
+                        <img src="https://raw.githubusercontent.com/MetrolistGroup/Metrolist/main/fastlane/metadata/android/en-US/images/screenshots/screenshot_6.png"
+                            alt="Metrolist player showing live synced lyrics" loading="lazy"
+                            decoding="async" width="360" height="800">
+                    </div>
+                    <figcaption>Live lyrics</figcaption>
+                </figure>
+            </div>
+        </section>
+
+        <!-- ============ DOWNLOADS ============ -->
+        <section id="downloads" class="section">
+            <p class="section-badge reveal">Cross-platform</p>
+            <h2 class="section-title reveal">Available on all your favorite devices.</h2>
+            <p class="section-sub reveal">Grab the latest stable release for your platform — we
+                detected it for you, but double-check before downloading.</p>
+
+            <div class="dl-panel reveal" id="dl-panel">
+                <div class="dl-tabs" id="dl-tabs" role="tablist" aria-label="Choose platform">
+                    <span class="dl-tab-pill" aria-hidden="true"></span>
+                    <button type="button" class="dl-tab" role="tab" data-platform="android"
+                        aria-selected="false">
+                        <i class="ri-android-fill" aria-hidden="true"></i> Android
+                    </button>
+                    <button type="button" class="dl-tab" role="tab" data-platform="windows"
+                        aria-selected="false">
+                        <i class="ri-windows-fill" aria-hidden="true"></i> Windows
+                    </button>
+                    <button type="button" class="dl-tab" role="tab" data-platform="linux"
+                        aria-selected="false">
+                        <i class="ri-ubuntu-fill" aria-hidden="true"></i> Linux
+                    </button>
+                </div>
+
+                <div class="dl-body">
+                    <div class="dl-icon-wrap" id="dl-icon-wrap" data-platform="android">
+                        <i class="ri-android-fill" id="dl-icon" aria-hidden="true"></i>
+                    </div>
+                    <div class="dl-info">
+                        <div class="dl-recommend" id="dl-recommend" hidden>
+                            <span class="pulse-dot" aria-hidden="true"></span> Recommended for your
+                            device
+                        </div>
+                        <h3 class="dl-title" id="dl-title">Metrolist for Android</h3>
+                        <p class="dl-desc" id="dl-desc">Install the APK and press play.</p>
+                        <p class="dl-meta" id="dl-meta">
+                            <span class="skeleton skeleton-text" style="width:120px"></span>
+                        </p>
+                    </div>
+                </div>
+
+                <div class="dl-actions">
+                    <a class="btn btn-primary btn-large" id="dl-btn"
+                        href="https://github.com/mumtazka/metrolist/releases">
+                        <i class="ri-download-line" aria-hidden="true"></i>
+                        Download for <span id="dl-btn-os">Android</span>
+                    </a>
+                    <button type="button" class="btn btn-ghost" id="dl-copy">
+                        <i class="ri-link-copy-line" aria-hidden="true"></i> Copy link
+                    </button>
                 </div>
             </div>
 
-            <div class="platforms-grid fade-up" id="platforms-grid">
-                <!-- Javascript will render other platforms here -->
+            <p class="download-note reveal">
+                <i class="ri-information-line" aria-hidden="true"></i>
+                macOS build isn't available yet — follow its progress on
+                <a href="https://github.com/mumtazka/metrolist/issues" target="_blank"
+                    rel="noopener">GitHub</a>.
+                If YouTube Music is blocked in your region, Metrolist needs a VPN or proxy.
+            </p>
+        </section>
+
+        <!-- ============ FAQ ============ -->
+        <section id="faq" class="section">
+            <p class="section-badge reveal">FAQ</p>
+            <h2 class="section-title reveal">Questions, answered.</h2>
+
+            <div class="faq-list reveal">
+                <details class="faq-item">
+                    <summary>
+                        <span>Is Metrolist really free?</span>
+                        <i class="ri-add-line" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Yes — completely. Metrolist is free and open source under the GPL, with no
+                            ads, no premium tier and no telemetry. Support the project by starring the
+                            repo or contributing code.</p>
+                    </div>
+                </details>
+                <details class="faq-item">
+                    <summary>
+                        <span>Which platforms are supported?</span>
+                        <i class="ri-add-line" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Android (APK), Windows (.exe) and Linux (.deb). A macOS build is not
+                            available yet.</p>
+                    </div>
+                </details>
+                <details class="faq-item">
+                    <summary>
+                        <span>Do I need a YouTube Music account?</span>
+                        <i class="ri-add-line" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>No. You can search and play right away. Signing in is optional — it unlocks
+                            library sync for your songs, albums, artists and playlists.</p>
+                    </div>
+                </details>
+                <details class="faq-item">
+                    <summary>
+                        <span>Why doesn't it load in my country?</span>
+                        <i class="ri-add-line" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Metrolist streams from YouTube Music. If YouTube Music isn't available in
+                            your region, you'll need a VPN or proxy connected to a supported region.</p>
+                    </div>
+                </details>
+                <details class="faq-item">
+                    <summary>
+                        <span>How do I report a bug or contribute?</span>
+                        <i class="ri-add-line" aria-hidden="true"></i>
+                    </summary>
+                    <div class="faq-answer">
+                        <p>Open an issue or a pull request on
+                            <a href="https://github.com/mumtazka/metrolist" target="_blank"
+                                rel="noopener">GitHub</a>.
+                            Every contribution — code, translations, bug reports — counts.</p>
+                    </div>
+                </details>
             </div>
         </section>
     </main>
 
     <footer>
-        <div class="footer-content fade-up">
-            <div class="brand">
-                <i class="ri-music-2-fill brand-icon"></i>
-                <span class="brand-name">Metrolist</span>
+        <div class="footer-content">
+            <div class="footer-brand">
+                <a href="#top" class="brand">
+                    <img src="app-icon.png" alt="" class="brand-app-icon" width="28" height="28">
+                    <span class="brand-name">Metrolist</span>
+                </a>
+                <p>Free, open-source YouTube Music client.</p>
             </div>
-            <p>&copy; 2026 Metrolist. Open Source &amp; Free.</p>
+            <nav class="footer-links" aria-label="Footer">
+                <a href="https://github.com/mumtazka/metrolist" target="_blank" rel="noopener">
+                    <i class="ri-github-fill" aria-hidden="true"></i> Source</a>
+                <a href="https://github.com/mumtazka/metrolist/releases" target="_blank"
+                    rel="noopener">
+                    <i class="ri-download-cloud-2-line" aria-hidden="true"></i> Releases</a>
+                <a href="https://github.com/mumtazka/metrolist/blob/main/LICENSE" target="_blank"
+                    rel="noopener">
+                    <i class="ri-government-line" aria-hidden="true"></i> GPL License</a>
+            </nav>
+            <p class="footer-copy">&copy; 2026 Metrolist contributors.</p>
         </div>
     </footer>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <script src="script.js"></script>
 </body>

@@ -1,6 +1,7 @@
 package com.metrolist.desktop.cipher
 
 import com.metrolist.innertube.YouTube
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -49,6 +50,8 @@ object PlayerJsFetcher {
 
             writeToCache(hash, playerJs)
             Pair(playerJs, hash)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             println("[Cipher] PlayerJsFetcher error: ${e.message}")
             null

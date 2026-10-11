@@ -70,6 +70,7 @@ enum class NavScreen(val label: String, val icon: ImageVector) {
     LIKED("Liked", Icons.Rounded.Favorite),
     DOWNLOADS("Downloads", Icons.Rounded.Download),
     CACHE("Cached", Icons.Rounded.CloudDownload),
+    LISTEN_TOGETHER("Listen Together", Icons.Rounded.Headphones),
     SETTINGS("Settings", Icons.Rounded.Settings),
 }
 
@@ -287,6 +288,12 @@ fun LeftSidebarPanel(
             )
 
             // ── Settings ──
+            SidebarNavItem(
+                label = "Listen Together",
+                icon = Icons.Rounded.Headphones,
+                selected = currentScreen == NavScreen.LISTEN_TOGETHER,
+                onClick = { onNavigate(NavScreen.LISTEN_TOGETHER) },
+            )
             SidebarNavItem(
                 label = "Settings",
                 icon = Icons.Rounded.Settings,

@@ -55,6 +55,7 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import androidx.compose.ui.res.painterResource
 import com.metrolist.desktop.auth.DesktopPreferences
 import com.metrolist.desktop.data.AppUpdater
 import com.metrolist.desktop.data.DESKTOP_APP_VERSION
@@ -71,6 +72,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import com.metrolist.desktop.sync.DesktopSyncClient
+import com.metrolist.desktop.sync.DesktopListenTogetherClient
 import com.metrolist.desktop.media.createDesktopMediaSession
 import com.metrolist.desktop.media.toMediaSnapshot
 import com.metrolist.desktop.ui.AsyncImage
@@ -126,6 +128,7 @@ fun main() = application {
     val scope = rememberCoroutineScope()
     val viewModel = remember { DesktopViewModel(scope) }
     val playerState = remember { PlayerState() }
+    val listenTogetherClient = remember { DesktopListenTogetherClient(playerState) }
 
     Window(
         onCloseRequest = {
@@ -134,16 +137,23 @@ fun main() = application {
         },
         visible = windowVisible,
         title = "Metrolist",
+        icon = painterResource("icon.png"),
         state = windowState,
         onPreviewKeyEvent = { event ->
             if (event.key == Key.Spacebar) {
-                if (!viewModel.isTextInputActive) {
+                // Only consume spacebar (for play/pause) when NOT typing in a text field.
+                // We check AWT's focusOwner directly — 100% reliable, no threading issues,
+                // because Window.onPreviewKeyEvent runs on the same thread as AWT dispatch.
+                val awtFocused = java.awt.KeyboardFocusManager
+                    .getCurrentKeyboardFocusManager().focusOwner
+                val isTypingInTextField = awtFocused is javax.swing.text.JTextComponent
+                if (!isTypingInTextField) {
                     if (event.type == KeyEventType.KeyDown) {
                         playerState.togglePlayPause()
                     }
-                    true // Consume both KeyDown and KeyUp when not typing so buttons aren't triggered
+                    true // consume event so focused buttons don't activate
                 } else {
-                    false // Pass through to active text field to type space
+                    false // pass through so the text field receives the space character
                 }
             } else if (event.type == KeyEventType.KeyDown) {
                 when (event.key) {
@@ -322,6 +332,7 @@ fun main() = application {
                 saveDesktopConfig()
                 mediaSession.close()
                 syncClient.disconnect()
+                listenTogetherClient.disconnect()
                 playerState.cleanup()
             }
         }
@@ -536,6 +547,7 @@ fun main() = application {
                                             Screen.LIKED     -> LikedSongsScreen(viewModel, playerState)
                                             Screen.DOWNLOADS -> DownloadsScreen(playerState, viewModel)
                                             Screen.CACHE     -> CachedScreen(playerState, viewModel)
+                                            Screen.LISTEN_TOGETHER -> ListenTogetherScreen(listenTogetherClient)
                                             Screen.SETTINGS  -> SettingsScreen(
                                                 viewModel,
                                                 pureBlack, { pureBlack = it },

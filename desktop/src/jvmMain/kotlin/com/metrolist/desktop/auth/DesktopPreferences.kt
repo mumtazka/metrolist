@@ -41,6 +41,14 @@ data class DesktopConfig(
     val sidebarPlaylistOrder: List<String> = emptyList(),
     /** Up to 10 most-recently played songs from search, newest first. */
     val recentSearches: List<RecentSearchEntry> = emptyList(),
+    val listenTogetherServerUrl: String = "",
+    val listenTogetherUsername: String = "",
+    val listenTogetherSessionToken: String = "",
+    val listenTogetherRoomCode: String = "",
+    val listenTogetherAutoApproval: Boolean = false,
+    val listenTogetherSyncVolume: Boolean = true,
+    val listenTogetherAutoApproveSuggestions: Boolean = false,
+    val listenTogetherBlockedUsers: Set<String> = emptySet(),
 )
 
 object DesktopPreferences {

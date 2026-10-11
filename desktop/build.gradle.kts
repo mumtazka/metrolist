@@ -46,6 +46,7 @@ kotlin {
                 implementation("com.materialkolor:material-kolor:2.0.0")
                 implementation(libs.ktor.client.content.negotiation)
                 implementation(libs.ktor.serialization.json)
+                implementation("com.google.protobuf:protobuf-java:4.34.0")
                 implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
                 implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")
                 // JNA for native platform integration (Windows SMTC, macOS NowPlaying)
@@ -102,4 +103,3 @@ compose.desktop {
         }
     }
 }
-

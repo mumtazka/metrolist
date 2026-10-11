@@ -20,6 +20,7 @@ import com.metrolist.desktop.potoken.PoTokenResult
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.Collections
+import kotlin.coroutines.coroutineContext
 
 data class PlayerSong(
     val id: String,
@@ -210,8 +211,13 @@ class PlayerState {
         println("[Player] Resolving stream for videoId=$videoId (parallel, ${streamClients.size} clients)")
         println("[Player] Cipher deobfuscator initialized=${DesktopCipherDeobfuscator.isInitialized()}")
 
+        // Keep resolution work as children of this playback attempt. A new song or a
+        // manual stop must cancel these requests, but a failed candidate must not
+        // cancel its siblings.
+        val resolutionScope = CoroutineScope(coroutineContext + SupervisorJob(coroutineContext[Job]))
+
         // Generate PoToken lazily so it never blocks direct URL clients.
-        val poTokenDeferred = scope.async(Dispatchers.IO, start = CoroutineStart.LAZY) {
+        val poTokenDeferred = resolutionScope.async(Dispatchers.IO, start = CoroutineStart.LAZY) {
             getPoToken(videoId)
         }
 
@@ -222,7 +228,7 @@ class PlayerState {
 
         // Launch all clients concurrently
         val jobs = streamClients.mapIndexed { index, client ->
-            scope.launch(Dispatchers.IO) {
+            resolutionScope.launch(Dispatchers.IO) {
                 // Skip clients that require login when we have no cookie.
                 if (client.loginRequired && com.metrolist.innertube.YouTube.cookie.isNullOrBlank()) {
                     val reason = "${client.clientName}: skipped (login required, not signed in)"
@@ -349,6 +355,9 @@ class PlayerState {
                     val durMs = response.videoDetails?.lengthSeconds?.toLongOrNull()?.let { it * 1000L }
                     println("[Player] ✓ ${client.clientName} resolved first!")
                     resultChannel.trySend(StreamResult(streamUrl, client.clientName, durMs))
+                } catch (e: CancellationException) {
+                    // Expected when another client wins, a timeout expires, or playback changes.
+                    throw e
                 } catch (e: Exception) {
                     val msg = e.message ?: e::class.simpleName ?: "exception"
                     println("[Player] ${client.clientName} exception: $msg")
@@ -358,7 +367,9 @@ class PlayerState {
         }
 
         // Wait for first success or all failures
-        val winner = withTimeoutOrNull(15_000) {
+        // Innertube retries transient requests internally. Fifteen seconds cut those
+        // retries off on slow/mobile networks and made every client look cancelled.
+        val winner = withTimeoutOrNull(30_000) {
             resultChannel.receive()
         }
 
@@ -367,14 +378,21 @@ class PlayerState {
         resultChannel.close()
 
         if (winner == null) {
+            resolutionScope.cancel()
             println("[Player] All clients failed for videoId=$videoId")
             if (!preload && isCurrent(generation, videoId)) {
-                scheduleRecovery("Waiting for network: ${failureReasons.firstOrNull() ?: "no playable stream"}")
+                scheduleRecovery(
+                    "Waiting for network: ${failureReasons.firstOrNull() ?: "no playable stream"}",
+                    cancelActiveResolution = false,
+                )
             }
             return
         }
 
-        if (!isCurrent(generation, videoId) && !preload) return
+        if (!isCurrent(generation, videoId) && !preload) {
+            resolutionScope.cancel()
+            return
+        }
 
         // Apply n-transform to the stream URL to avoid throttling.
         // Any URL containing an 'n' parameter needs this transform, regardless of client type.
@@ -406,7 +424,10 @@ class PlayerState {
             }
         }
 
-        if (preload) return
+        if (preload) {
+            resolutionScope.cancel()
+            return
+        }
 
         winner.durationMs?.let { duration = it }
         println("[Player] Playing URL with client=${winner.clientName}")
@@ -429,9 +450,7 @@ class PlayerState {
             )
         }
 
-        if (poTokenDeferred.isActive) {
-            poTokenDeferred.cancel()
-        }
+        resolutionScope.cancel()
     }
 
     private fun isCurrent(generation: Long, videoId: String): Boolean =
@@ -477,12 +496,12 @@ class PlayerState {
         }
     }
 
-    private fun scheduleRecovery(reason: String) {
+    private fun scheduleRecovery(reason: String, cancelActiveResolution: Boolean = true) {
         val song = currentSong ?: return
         val generation = playbackGeneration
         val resumeAt = currentPosition
         retryJob?.cancel()
-        resolveJob?.cancel()
+        if (cancelActiveResolution) resolveJob?.cancel()
         preloadJob?.cancel()
         preparedNext = null
         mpv.stop()
@@ -722,15 +741,17 @@ class PlayerState {
         
         // Fallback: extract from player.js directly
         return try {
-            val playerJs = com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = false)?.first
-                    ?: com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = true)?.first
-                    ?: return null
-            val hash = com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = false)?.second
-                    ?: com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = true)?.second
-                    ?: return null
+            // Fetch once. The previous code performed a second network/cache lookup
+            // merely to get the hash, increasing contention when a connection is poor.
+            val playerJsAndHash = com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = false)
+                ?: com.metrolist.desktop.cipher.PlayerJsFetcher.getPlayerJs(forceRefresh = true)
+                ?: return null
+            val (playerJs, hash) = playerJsAndHash
             com.metrolist.desktop.cipher.FunctionNameExtractor
                 .analyzePlayerJs(playerJs, knownHash = hash)
                     .signatureTimestamp
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             println("[Player] Failed to extract signature timestamp: ${e.message}")
             null
