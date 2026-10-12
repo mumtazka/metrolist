@@ -12,8 +12,10 @@
 
 package com.metrolist.desktop.player
 
+import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -93,68 +95,71 @@ object MpvSetupHelper {
         withContext(Dispatchers.IO) {
             check(isWindows) { "downloadMpvForWindows() is only supported on Windows" }
 
-            // Official mpv portable build — architecture: x86-64 (covers all modern Windows)
-            val downloadUrl = "https://nightly.link/shinchiro/mpv-winbuild-cmake/workflows/daily/master/mpv-x86_64-v3-20240101.zip"
-            // Fallback mirror (SourceForge) if the above is slow:
-            // val downloadUrl = "https://sourceforge.net/projects/mpv-player-windows/files/latest/download"
+            // SourceForge redirects this endpoint to the current portable 64-bit build.
+            // Current builds are 7z archives; older mirrors may still return zip.
+            val downloadUrl = "https://sourceforge.net/projects/mpv-player-windows/files/64bit/latest/download"
 
             windowsMpvDir.mkdirs()
-            val zipFile = File(windowsMpvDir, "mpv-download.zip")
+            val archiveFile = File(windowsMpvDir, "mpv-download.tmp")
 
             println("[MpvSetup] Downloading mpv from: $downloadUrl")
             onProgress(0.0f)
 
-            // Download with progress
             val connection = URL(downloadUrl).openConnection() as HttpURLConnection
             connection.connectTimeout = 30_000
             connection.readTimeout = 120_000
             connection.setRequestProperty("User-Agent", "Metrolist-Desktop/1.0")
             connection.connect()
 
-            val totalBytes = connection.contentLengthLong.takeIf { it > 0 } ?: -1L
-            var downloadedBytes = 0L
-
-            FileOutputStream(zipFile).use { out ->
-                val buffer = ByteArray(64 * 1024)
-                connection.inputStream.use { input ->
-                    var read: Int
-                    while (input.read(buffer).also { read = it } != -1) {
-                        out.write(buffer, 0, read)
-                        downloadedBytes += read
-                        if (totalBytes > 0) {
-                            onProgress(0.05f + (downloadedBytes.toFloat() / totalBytes) * 0.80f)
-                        }
-                    }
+            try {
+                check(connection.responseCode in 200..299) {
+                    "mpv download failed with HTTP ${connection.responseCode}"
                 }
-            }
-            connection.disconnect()
-            println("[MpvSetup] Download complete (${downloadedBytes / 1024} KB), extracting...")
-            onProgress(0.85f)
+                val totalBytes = connection.contentLengthLong.takeIf { it > 0 } ?: -1L
+                var downloadedBytes = 0L
 
-            // Extract mpv.exe (and optionally its DLLs) from the zip
-            ZipInputStream(zipFile.inputStream()).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    val name = entry.name
-                    // Extract mpv.exe and all .dll files at the root of the zip
-                    if (!entry.isDirectory && (name.endsWith("mpv.exe") || name.endsWith(".dll"))) {
-                        val outFile = File(windowsMpvDir, File(name).name)
-                        FileOutputStream(outFile).use { out ->
-                            val buffer = ByteArray(64 * 1024)
-                            var read: Int
-                            while (zis.read(buffer).also { read = it } != -1) {
-                                out.write(buffer, 0, read)
+                FileOutputStream(archiveFile).use { out ->
+                    val buffer = ByteArray(64 * 1024)
+                    connection.inputStream.use { input ->
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            out.write(buffer, 0, read)
+                            downloadedBytes += read
+                            if (totalBytes > 0) {
+                                onProgress(0.05f + (downloadedBytes.toFloat() / totalBytes) * 0.80f)
                             }
                         }
-                        println("[MpvSetup] Extracted: ${outFile.name}")
                     }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
+                }
+                println("[MpvSetup] Download complete (${downloadedBytes / 1024} KB), extracting...")
+            } catch (error: Exception) {
+                archiveFile.delete()
+                throw error
+            } finally {
+                connection.disconnect()
+            }
+            onProgress(0.85f)
+
+            if (isSevenZip(archiveFile)) {
+                SevenZFile(archiveFile).use { archive ->
+                    var entry = archive.nextEntry
+                    while (entry != null) {
+                        extractEntry(entry.name, entry.isDirectory, archive::read, windowsMpvDir)
+                        entry = archive.nextEntry
+                    }
+                }
+            } else {
+                ZipInputStream(BufferedInputStream(archiveFile.inputStream())).use { archive ->
+                    var entry = archive.nextEntry
+                    while (entry != null) {
+                        extractEntry(entry.name, entry.isDirectory, archive::read, windowsMpvDir)
+                        archive.closeEntry()
+                        entry = archive.nextEntry
+                    }
                 }
             }
 
-            // Cleanup zip
-            zipFile.delete()
+            archiveFile.delete()
             onProgress(1.0f)
 
             val mpvExe = File(windowsMpvDir, "mpv.exe")
@@ -164,6 +169,31 @@ object MpvSetupHelper {
         }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private fun isSevenZip(file: File): Boolean = file.inputStream().use { input ->
+        val header = ByteArray(6)
+        input.read(header) == header.size && header.contentEquals(byteArrayOf(
+            0x37, 0x7A, 0xBC.toByte(), 0xAF.toByte(), 0x27, 0x1C
+        ))
+    }
+
+    private fun extractEntry(
+        name: String,
+        isDirectory: Boolean,
+        read: (ByteArray, Int, Int) -> Int,
+        destination: File,
+    ) {
+        if (isDirectory || (!name.endsWith("mpv.exe", ignoreCase = true) && !name.endsWith(".dll", ignoreCase = true))) return
+        val output = File(destination, File(name).name)
+        FileOutputStream(output).use { out ->
+            val buffer = ByteArray(64 * 1024)
+            var count: Int
+            while (read(buffer, 0, buffer.size).also { count = it } != -1) {
+                out.write(buffer, 0, count)
+            }
+        }
+        println("[MpvSetup] Extracted: ${output.name}")
+    }
 
     private fun findOnPath(executable: String): String? {
         val pathEnv = System.getenv("PATH") ?: return null

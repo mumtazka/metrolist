@@ -46,6 +46,7 @@ kotlin {
                 implementation("com.materialkolor:material-kolor:2.0.0")
                 implementation(libs.ktor.client.content.negotiation)
                 implementation(libs.ktor.serialization.json)
+                implementation("org.apache.commons:commons-compress:1.28.0")
                 implementation("com.google.protobuf:protobuf-java:4.34.0")
                 implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
                 implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")

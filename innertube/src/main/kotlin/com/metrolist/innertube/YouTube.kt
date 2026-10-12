@@ -792,7 +792,14 @@ object YouTube {
             return@runCatching homeContinuation(continuation).getOrThrow()
         }
 
-        val response = innerTube.browse(WEB_REMIX, browseId = "FEmusic_home", params = params).body<BrowseResponse>()
+        val response = runCatching {
+            innerTube.browse(WEB_REMIX, browseId = "FEmusic_home", params = params).body<BrowseResponse>()
+        }.getOrElse { remixError ->
+            Logger.getLogger("YouTube").warning(
+                "WEB_REMIX home request failed; retrying with WEB: ${remixError.message}"
+            )
+            innerTube.browse(WEB, browseId = "FEmusic_home", params = params).body<BrowseResponse>()
+        }
         Logger.getLogger("YouTube").fine("home() response received")
         val continuation = response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
             ?.tabRenderer?.content?.sectionListRenderer?.continuations?.getContinuation()
