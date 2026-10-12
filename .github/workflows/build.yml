@@ -65,6 +65,7 @@ jobs:
           LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
 
       - name: Sign APK
+        if: ${{ secrets.KEYSTORE != '' }}
         uses: ilharp/sign-android-release@v2.0.0
         with:
           releaseDir: app/build/outputs/apk/${{ matrix.variant }}/release/
@@ -83,7 +84,17 @@ jobs:
           else
             TARGET_NAME="app-universal-release.apk"
           fi
-          find "$OUTPUT_DIR" -name "*-signed.apk" -o -name "*-unsigned-signed.apk" | xargs -I{} mv {} "$OUTPUT_DIR/out/$TARGET_NAME"
+          APK=$(find "$OUTPUT_DIR" -name "*-signed.apk" -o -name "*-unsigned-signed.apk" | head -1)
+          if [ -z "$APK" ]; then
+            APK=$(find "$OUTPUT_DIR" -name "*.apk" ! -path "*/out/*" | head -1)
+          fi
+          if [ -n "$APK" ]; then
+            cp "$APK" "$OUTPUT_DIR/out/$TARGET_NAME"
+          else
+            echo "ERROR: No APK file found in $OUTPUT_DIR!"
+            find "$OUTPUT_DIR" || true
+            exit 1
+          fi
 
       - name: Upload Signed APK
         uses: actions/upload-artifact@v4
@@ -129,6 +140,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Restore Persistent Keystore
+        if: ${{ secrets.DEBUG_KEYSTORE != '' }}
         run: |
           echo "${{ secrets.DEBUG_KEYSTORE }}" | base64 -d > ./app/persistent-debug.keystore
 
