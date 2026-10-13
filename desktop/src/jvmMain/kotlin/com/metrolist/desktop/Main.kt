@@ -140,26 +140,7 @@ fun main() = application {
         icon = painterResource("icon.png"),
         state = windowState,
         onPreviewKeyEvent = { event ->
-            if (event.key == Key.Spacebar) {
-                // Only consume spacebar (for play/pause) when NOT typing in a text field.
-                // We check AWT's focusOwner directly — 100% reliable, no threading issues,
-                // because Window.onPreviewKeyEvent runs on the same thread as AWT dispatch.
-                val awtFocused = java.awt.KeyboardFocusManager
-                    .getCurrentKeyboardFocusManager().focusOwner
-                // Compose Desktop text fields do not always expose a Swing
-                // JTextComponent as the AWT focus owner. Use the view-model
-                // focus flag as the source of truth for those fields.
-                val isTypingInTextField = awtFocused is javax.swing.text.JTextComponent ||
-                    viewModel.isTextInputActive
-                if (!isTypingInTextField) {
-                    if (event.type == KeyEventType.KeyDown) {
-                        playerState.togglePlayPause()
-                    }
-                    true // consume event so focused buttons don't activate
-                } else {
-                    false // pass through so the text field receives the space character
-                }
-            } else if (event.type == KeyEventType.KeyDown) {
+            if (event.type == KeyEventType.KeyDown) {
                 when (event.key) {
                     Key.MediaPlayPause -> {
                         playerState.togglePlayPause()
@@ -401,6 +382,16 @@ fun main() = application {
                     .fillMaxSize()
                     .focusable()
                     .focusRequester(focusRequester)
+                    // Handle space after focused children. A text field consumes
+                    // its own space key first, so typing cannot toggle playback.
+                    .onKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown && event.key == Key.Spacebar) {
+                            playerState.togglePlayPause()
+                            true
+                        } else {
+                            false
+                        }
+                    }
                     .onFocusEvent { state ->
                         if (state.isFocused) {
                             println("[KeyEvent] Window focused — media keys active")
