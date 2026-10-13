@@ -410,8 +410,13 @@ fun main() = application {
                                         val inSearch = searchFieldBounds?.contains(pos) == true
                                         val inDropdown = recentDropdownBounds?.contains(pos) == true
                                         if (!inSearch && !inDropdown) {
-                                            focusManager.clearFocus()
+                                            // Clearing the child focus alone can leave
+                                            // Compose without a focused owner. Explicitly
+                                            // return focus to the root so global shortcuts
+                                            // become active again after an outside click.
+                                            focusManager.clearFocus(force = true)
                                             viewModel.isTextInputActive = false
+                                            focusRequester.requestFocus()
                                         }
                                     }
                                 }
