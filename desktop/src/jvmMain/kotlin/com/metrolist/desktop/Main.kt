@@ -146,7 +146,11 @@ fun main() = application {
                 // because Window.onPreviewKeyEvent runs on the same thread as AWT dispatch.
                 val awtFocused = java.awt.KeyboardFocusManager
                     .getCurrentKeyboardFocusManager().focusOwner
-                val isTypingInTextField = awtFocused is javax.swing.text.JTextComponent
+                // Compose Desktop text fields do not always expose a Swing
+                // JTextComponent as the AWT focus owner. Use the view-model
+                // focus flag as the source of truth for those fields.
+                val isTypingInTextField = awtFocused is javax.swing.text.JTextComponent ||
+                    viewModel.isTextInputActive
                 if (!isTypingInTextField) {
                     if (event.type == KeyEventType.KeyDown) {
                         playerState.togglePlayPause()
