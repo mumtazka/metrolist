@@ -164,7 +164,10 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
 
         val request = Request.Builder()
             .url(activeServerUrl)
-            .header("User-Agent", "Metrolist Desktop")
+            // Keep the handshake identical to Android. The relay uses the
+            // WebSocket client identity when deciding who may create rooms.
+            // Android leaves User-Agent at OkHttp's default, so desktop must
+            // not send a custom desktop-only value here.
             .build()
 
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
