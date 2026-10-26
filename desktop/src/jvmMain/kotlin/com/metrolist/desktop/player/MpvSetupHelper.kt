@@ -15,6 +15,10 @@ package com.metrolist.desktop.player
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -23,6 +27,9 @@ import java.net.URL
 import java.util.zip.ZipInputStream
 
 object MpvSetupHelper {
+
+    private const val MPV_RELEASES_API = "https://api.github.com/repos/zhongfly/mpv-winbuild/releases/latest"
+    private val mpvReleaseJson = Json { ignoreUnknownKeys = true }
 
     private val isWindows = System.getProperty("os.name").lowercase().contains("win")
 
@@ -86,7 +93,7 @@ object MpvSetupHelper {
     /**
      * Downloads a portable mpv build for Windows into %LOCALAPPDATA%\Metrolist\mpv\.
      *
-     * The download URL points to the official mpv.io Windows build (x86-64, ~30 MB zip).
+     * Resolves the latest x86-64 Windows build linked from mpv.io and downloads its 7z archive.
      * Progress is reported via [onProgress] (0.0–1.0).
      *
      * @throws Exception if download or extraction fails.
@@ -95,9 +102,7 @@ object MpvSetupHelper {
         withContext(Dispatchers.IO) {
             check(isWindows) { "downloadMpvForWindows() is only supported on Windows" }
 
-            // SourceForge redirects this endpoint to the current portable 64-bit build.
-            // Current builds are 7z archives; older mirrors may still return zip.
-            val downloadUrl = "https://sourceforge.net/projects/mpv-player-windows/files/64bit/latest/download"
+            val downloadUrl = resolveMpvDownloadUrl()
 
             windowsMpvDir.mkdirs()
             val archiveFile = File(windowsMpvDir, "mpv-download.tmp")
@@ -167,6 +172,35 @@ object MpvSetupHelper {
             println("[MpvSetup] mpv ready at: ${mpvExe.absolutePath}")
             mpvExe.absolutePath
         }
+
+    /** Resolves the latest generic x86-64 build from mpv's recommended Windows build provider. */
+    private fun resolveMpvDownloadUrl(): String {
+        val connection = URL(MPV_RELEASES_API).openConnection() as HttpURLConnection
+        connection.connectTimeout = 30_000
+        connection.readTimeout = 30_000
+        connection.setRequestProperty("Accept", "application/vnd.github+json")
+        connection.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+        connection.setRequestProperty("User-Agent", "Metrolist-Desktop")
+
+        try {
+            check(connection.responseCode in 200..299) {
+                "Could not find the latest mpv release (GitHub HTTP ${connection.responseCode})"
+            }
+            val release = connection.inputStream.bufferedReader().use { reader ->
+                mpvReleaseJson.parseToJsonElement(reader.readText()).jsonObject
+            }
+            val asset = release["assets"]?.jsonArray
+                ?.map { it.jsonObject }
+                ?.firstOrNull { asset ->
+                    asset["name"]?.jsonPrimitive?.content
+                        ?.matches(Regex("mpv-x86_64-\\d{8}-git-[0-9a-f]+\\.7z")) == true
+                }
+            return asset?.get("browser_download_url")?.jsonPrimitive?.content
+                ?: error("The latest mpv release has no compatible x86-64 download")
+        } finally {
+            connection.disconnect()
+        }
+    }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 

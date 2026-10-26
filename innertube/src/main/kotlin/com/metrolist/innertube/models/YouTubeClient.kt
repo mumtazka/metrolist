@@ -33,7 +33,7 @@ data class YouTubeClient(
             deviceModel = deviceModel,
             androidSdkVersion = androidSdkVersion,
             gl = locale.gl,
-            hl = locale.hl,
+            hl = locale.hl.substringBefore('-').substringBefore('_').ifBlank { "en" },
             visitorData = visitorData
         ),
         user = Context.User(
