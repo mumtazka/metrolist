@@ -39,9 +39,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.onPointerEvent
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
@@ -118,6 +116,7 @@ typealias Screen = NavScreen
 // Entry Point
 // ============================================================
 
+@OptIn(ExperimentalComposeUiApi::class)
 fun main() = application {
     // Start maximized — works properly on tiling WMs like Hyprland
     val windowState = rememberWindowState(
@@ -382,10 +381,16 @@ fun main() = application {
                     .fillMaxSize()
                     .focusable()
                     .focusRequester(focusRequester)
-                    // Handle space after focused children. A text field consumes
-                    // its own space key first, so typing cannot toggle playback.
+                    // Handle space only when no text input owns the keyboard focus.
+                    // TextField key events can bubble to this root, so relying on
+                    // the child to consume Space is not sufficient: without this
+                    // guard, typing a space in search also toggles playback.
                     .onKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown && event.key == Key.Spacebar) {
+                        if (
+                            event.type == KeyEventType.KeyDown &&
+                            event.key == Key.Spacebar &&
+                            !viewModel.isTextInputActive
+                        ) {
                             playerState.togglePlayPause()
                             true
                         } else {
@@ -397,30 +402,17 @@ fun main() = application {
                             println("[KeyEvent] Window focused — media keys active")
                         }
                     }
-                    // Click-outside-search dismissal: when search is active and user clicks elsewhere,
-                    // clear focus and exit search mode. We use PointerEventPass.Initial so we see
-                    // the event first but do NOT consume it — other elements still get their clicks.
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                if (event.type == PointerEventType.Press && viewModel.isTextInputActive) {
-                                    val pos = event.changes.firstOrNull()?.position
-                                    if (pos != null) {
-                                        val inSearch = searchFieldBounds?.contains(pos) == true
-                                        val inDropdown = recentDropdownBounds?.contains(pos) == true
-                                        if (!inSearch && !inDropdown) {
-                                            // Clearing the child focus alone can leave
-                                            // Compose without a focused owner. Explicitly
-                                            // return focus to the root so global shortcuts
-                                            // become active again after an outside click.
-                                            focusManager.clearFocus(force = true)
-                                            viewModel.isTextInputActive = false
-                                            focusRequester.requestFocus()
-                                        }
-                                    }
-                                }
-                            }
+                    // Click-outside-search dismissal. Handle the press directly on
+                    // the root so empty areas also restore the main keyboard focus.
+                    .onPointerEvent(PointerEventType.Press) { event ->
+                        if (!viewModel.isTextInputActive) return@onPointerEvent
+                        val position = event.changes.firstOrNull()?.position ?: return@onPointerEvent
+                        val inSearch = searchFieldBounds?.contains(position) == true
+                        val inDropdown = recentDropdownBounds?.contains(position) == true
+                        if (!inSearch && !inDropdown) {
+                            focusManager.clearFocus(force = true)
+                            viewModel.isTextInputActive = false
+                            focusRequester.requestFocus()
                         }
                     },
                 color = MaterialTheme.colorScheme.background,
@@ -1136,59 +1128,39 @@ fun SearchScreen(
                 )
 
                 val allResults = viewModel.searchResults
-                val topResult  = SearchRanker.pickTopResult(allResults, query, viewModel.likedSongIds)
-                val restResults = allResults.filter { it !== topResult }
                 val searchSongs = allResults.filterIsInstance<SongItem>()
 
                 val filteredResults = when (selectedFilter) {
-                    "Songs" -> restResults.filterIsInstance<SongItem>()
-                    "Albums" -> restResults.filterIsInstance<AlbumItem>()
-                    "Artists" -> restResults.filterIsInstance<ArtistItem>()
-                    "Playlists" -> restResults.filterIsInstance<PlaylistItem>()
-                    else -> restResults
+                    "Songs" -> allResults.filterIsInstance<SongItem>()
+                    "Albums" -> allResults.filterIsInstance<AlbumItem>()
+                    "Artists" -> allResults.filterIsInstance<ArtistItem>()
+                    "Playlists" -> allResults.filterIsInstance<PlaylistItem>()
+                    else -> allResults
                 }
 
-                BoxWithConstraints(Modifier.fillMaxSize()) {
-                    val isWide = maxWidth >= 800.dp
-                    if (isWide) {
-                        // ── Wide layout: Top Result card left, list right ──
-                        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                            // Left: Top Result card
-                            if (topResult != null && selectedFilter == null) {
-                                TopResultCard(
-                                    item = topResult,
-                                    playerState = playerState,
-                                    viewModel = viewModel,
-                                    searchSongs = searchSongs,
-                                    onOpenPlaylist = onOpenPlaylist,
-                                    modifier = Modifier.width(260.dp).fillMaxHeight(),
+                LazyColumn(Modifier.fillMaxSize()) {
+                    if (selectedFilter == null) {
+                        // Match mobile: preserve the server-provided summary sections
+                        // instead of merging and client-side re-ranking every result.
+                        viewModel.searchSummaries.forEach { summary ->
+                            item(key = "section_${summary.title}") {
+                                Text(
+                                    summary.title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 6.dp),
                                 )
                             }
-                            LazyColumn(Modifier.weight(1f)) {
-                                items(filteredResults, key = { it.id }) { item ->
-                                    SearchResultRow(item, playerState, viewModel, searchSongs, onOpenPlaylist)
-                                }
+                            items(
+                                items = summary.items,
+                                key = { "${summary.title}/${it.id}" },
+                            ) { item ->
+                                SearchResultRow(item, playerState, viewModel, searchSongs, onOpenPlaylist)
                             }
                         }
                     } else {
-                        // ── Narrow layout: stacked ──
-                        LazyColumn(Modifier.fillMaxSize()) {
-                            if (topResult != null && selectedFilter == null) {
-                                item {
-                                    TopResultCard(
-                                        item = topResult,
-                                        playerState = playerState,
-                                        viewModel = viewModel,
-                                        searchSongs = searchSongs,
-                                        onOpenPlaylist = onOpenPlaylist,
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                    Spacer(Modifier.height(16.dp))
-                                }
-                            }
-                            items(filteredResults, key = { it.id }) { item ->
-                                SearchResultRow(item, playerState, viewModel, searchSongs, onOpenPlaylist)
-                            }
+                        items(filteredResults, key = { it.id }) { item ->
+                            SearchResultRow(item, playerState, viewModel, searchSongs, onOpenPlaylist)
                         }
                     }
                 }

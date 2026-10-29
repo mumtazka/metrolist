@@ -8,7 +8,6 @@ import androidx.compose.runtime.*
 import com.metrolist.desktop.auth.DesktopPreferences
 import com.metrolist.desktop.data.LocalPlaylist
 import com.metrolist.desktop.data.LocalPlaylistStore
-import com.metrolist.desktop.search.SearchRanker
 import com.metrolist.desktop.player.PlayerSong
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.utils.parseCookieString
@@ -20,6 +19,7 @@ import com.metrolist.innertube.models.PlaylistItem
 import com.metrolist.innertube.pages.ArtistPage
 import com.metrolist.innertube.pages.HomePage
 import com.metrolist.innertube.pages.PlaylistPage
+import com.metrolist.innertube.pages.SearchSummary
 import com.metrolist.desktop.importer.ExternalPlaylist
 import com.metrolist.desktop.importer.MatchedTrack
 import com.metrolist.desktop.importer.PlaylistMatcher
@@ -39,8 +39,11 @@ class DesktopViewModel(private val scope: CoroutineScope) {
     // ── Search ──
     var searchResults by mutableStateOf<List<YTItem>>(emptyList())
         private set
+    var searchSummaries by mutableStateOf<List<SearchSummary>>(emptyList())
+        private set
     var searchLoading by mutableStateOf(false)
         private set
+    private var searchJob: Job? = null
 
     // ── Account ──
     var accountName by mutableStateOf<String?>(null)
@@ -211,46 +214,46 @@ class DesktopViewModel(private val scope: CoroutineScope) {
     }
 
     fun search(query: String) {
+        searchJob?.cancel()
         if (query.isBlank()) {
             searchResults = emptyList()
+            searchSummaries = emptyList()
+            searchLoading = false
             return
         }
         searchLoading = true
-        scope.launch(Dispatchers.IO) {
+        searchResults = emptyList()
+        searchSummaries = emptyList()
+        searchJob = scope.launch(Dispatchers.IO) {
             try {
-                // Phase 1: fire searchSummary and FILTER_SONG in parallel
-                coroutineScope {
-                    val summaryDeferred = async {
-                        YouTube.searchSummary(query).getOrNull()
-                            ?.summaries?.flatMap { it.items } ?: emptyList()
+                val summaries = YouTube.searchSummary(query).getOrThrow().summaries.toMutableList()
+
+                // The mobile All tab normally receives a Songs section from the
+                // summary endpoint. Some queries only return Top result, while
+                // the same query's Songs filter still contains the remaining
+                // tracks. Keep Top result first and use that filtered response
+                // as a fallback so desktop does not hide valid matches.
+                if (summaries.size == 1) {
+                    val summaryIds = summaries.flatMap { it.items }.map { it.id }.toSet()
+                    val fallbackSongs = YouTube.search(query, YouTube.SearchFilter.FILTER_SONG)
+                        .getOrNull()
+                        ?.items
+                        ?.filterNot { it.id in summaryIds }
+                        .orEmpty()
+                    if (fallbackSongs.isNotEmpty()) {
+                        summaries += com.metrolist.innertube.pages.SearchSummary("Songs", fallbackSongs)
                     }
-                    val songFilterDeferred = async {
-                        YouTube.search(query, YouTube.SearchFilter.FILTER_SONG).getOrNull()
-                            ?.items ?: emptyList()
-                    }
-
-                    val summaryItems = summaryDeferred.await()
-                    val filteredSongs = songFilterDeferred.await()
-
-                    // Phase 2: merge, deduplicate (summary takes precedence)
-                    val seenIds = summaryItems.map { it.id }.toMutableSet()
-                    val extraSongs = filteredSongs.filter { seenIds.add(it.id) }
-                    val merged = summaryItems + extraSongs
-
-                    // Phase 3: detect primary artist → fetch more of their songs as filler
-                    val primaryArtistName = SearchRanker.detectPrimaryArtist(merged, query)
-                    val artistFill = if (primaryArtistName != null) {
-                        YouTube.search(primaryArtistName, YouTube.SearchFilter.FILTER_SONG)
-                            .getOrNull()?.items?.filter { seenIds.add(it.id) } ?: emptyList()
-                    } else emptyList()
-
-                    // Phase 4: 3-tier rank — title match → artist fill → rest
-                    searchResults = SearchRanker.rankResultsWithArtistFill(
-                        merged + artistFill, query, likedSongIds
-                    )
                 }
+
+                searchSummaries = summaries
+                searchResults = summaries
+                    .flatMap { it.items }
+                    .distinctBy { it.id }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 searchResults = emptyList()
+                searchSummaries = emptyList()
             }
             searchLoading = false
         }

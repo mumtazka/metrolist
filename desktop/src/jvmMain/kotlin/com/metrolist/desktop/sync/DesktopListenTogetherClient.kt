@@ -59,6 +59,11 @@ sealed class PendingRoomAction {
     data class JoinRoom(val roomCode: String, val username: String) : PendingRoomAction()
 }
 
+private data class PendingGuestPlayback(
+    val action: String,
+    val position: Long,
+)
+
 /** Desktop implementation of the Listen Together protobuf WebSocket protocol. */
 class DesktopListenTogetherClient(private val player: PlayerState) {
     companion object {
@@ -98,6 +103,8 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
     private var lastSentPosition = -1L
     private var lastSentVolume = -1f
     private var bufferingTrackId: String? = null
+    private var bufferingJob: Job? = null
+    private var pendingGuestPlayback: PendingGuestPlayback? = null
 
     private val _state = MutableStateFlow(ListenTogetherConnectionState.DISCONNECTED)
     val state: StateFlow<ListenTogetherConnectionState> = _state.asStateFlow()
@@ -228,6 +235,7 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
         reconnectJob?.cancel()
         pingJob?.cancel()
         playbackJob?.cancel()
+        bufferingJob?.cancel()
         webSocket?.close(1000, "User disconnected")
         webSocket = null
         connected.set(false)
@@ -237,6 +245,8 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
         _joinRequests.value = emptyList()
         _suggestions.value = emptyList()
         pendingAction = null
+        bufferingTrackId = null
+        pendingGuestPlayback = null
         reconnectAttempts = 0
         saveSession()
     }
@@ -537,7 +547,10 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
             MessageTypes.BUFFER_COMPLETE -> {
                 val p = Listentogether.BufferCompletePayload.parseFrom(payload)
                 log("Buffering complete for track: ${p.trackId}")
-                bufferingTrackId = null
+                if (bufferingTrackId == p.trackId) {
+                    bufferingTrackId = null
+                    applyPendingGuestPlayback()
+                }
             }
 
             MessageTypes.HOST_CHANGED -> {
@@ -659,13 +672,16 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
                             durationMs = t.duration,
                         )
                         log("Guest applying CHANGE_TRACK: ${song.title}")
-                        player.playSong(song)
-                        bufferingTrackId = song.id
-                        send(MessageTypes.BUFFER_READY, bufferReadyPayload(song.id))
+                        pendingGuestPlayback = null
+                        startGuestTrack(song)
                     }
                 }
                 PlaybackActions.PLAY -> {
-                    val pos = p.position
+                    val pos = adjustedPosition(p)
+                    if (bufferingTrackId != null) {
+                        pendingGuestPlayback = PendingGuestPlayback(PlaybackActions.PLAY, pos)
+                        return
+                    }
                     val diff = kotlin.math.abs(player.currentPosition - pos)
                     // Only seek if distance is large (>3s) to prevent choppy playback
                     if (diff > 3000L || !player.isPlaying) {
@@ -675,6 +691,10 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
                 }
                 PlaybackActions.PAUSE -> {
                     val pos = p.position
+                    if (bufferingTrackId != null) {
+                        pendingGuestPlayback = PendingGuestPlayback(PlaybackActions.PAUSE, pos)
+                        return
+                    }
                     val diff = kotlin.math.abs(player.currentPosition - pos)
                     if (diff > 2000L) {
                         player.seekTo(pos)
@@ -682,6 +702,10 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
                     player.pause()
                 }
                 PlaybackActions.SEEK -> {
+                    if (bufferingTrackId != null) {
+                        pendingGuestPlayback = PendingGuestPlayback(PlaybackActions.SEEK, p.position)
+                        return
+                    }
                     player.seekTo(p.position)
                 }
                 PlaybackActions.SKIP_NEXT -> {
@@ -704,6 +728,53 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
         }
     }
 
+    private fun adjustedPosition(p: Listentogether.PlaybackActionPayload): Long {
+        if (p.serverTime <= 0L) return p.position
+        val elapsed = (System.currentTimeMillis() - p.serverTime).coerceAtLeast(0L)
+        return p.position + elapsed
+    }
+
+    private fun startGuestTrack(song: PlayerSong) {
+        bufferingJob?.cancel()
+        bufferingTrackId = song.id
+        player.playSong(song)
+        bufferingJob = scope.launch {
+            var waited = 0
+            while (isActive && bufferingTrackId == song.id && player.isLoadingStream && waited < 150) {
+                delay(200)
+                waited++
+            }
+            if (!isActive || bufferingTrackId != song.id) return@launch
+
+            if (player.isLoadingStream) {
+                log("Timed out waiting for guest track to buffer: ${song.id}")
+                return@launch
+            }
+
+            player.pause()
+            send(MessageTypes.BUFFER_READY, bufferReadyPayload(song.id))
+            log("Guest buffer ready for track: ${song.id}")
+        }
+    }
+
+    private fun applyPendingGuestPlayback() {
+        val pending = pendingGuestPlayback ?: return
+        pendingGuestPlayback = null
+        suppressPlaybackEvents = true
+        try {
+            player.seekTo(pending.position)
+            when (pending.action) {
+                PlaybackActions.PLAY -> player.resume()
+                PlaybackActions.PAUSE -> player.pause()
+            }
+        } finally {
+            scope.launch {
+                delay(300)
+                suppressPlaybackEvents = false
+            }
+        }
+    }
+
     private fun applyRoomStateAsGuest(state: Listentogether.RoomState) {
         if (state.hasCurrentTrack() && state.currentTrack.id.isNotEmpty()) {
             val t = state.currentTrack
@@ -716,9 +787,11 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
             )
             if (player.currentSong?.id != song.id) {
                 suppressPlaybackEvents = true
-                player.playSong(song)
-                bufferingTrackId = song.id
-                send(MessageTypes.BUFFER_READY, bufferReadyPayload(song.id))
+                pendingGuestPlayback = PendingGuestPlayback(
+                    action = if (state.isPlaying) PlaybackActions.PLAY else PlaybackActions.PAUSE,
+                    position = state.position,
+                )
+                startGuestTrack(song)
             }
             scope.launch {
                 var waited = 0
@@ -726,13 +799,15 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
                     delay(200)
                     waited++
                 }
-                if (state.position > 0) {
-                    player.seekTo(state.position)
-                }
-                if (state.isPlaying) {
-                    player.resume()
-                } else {
-                    player.pause()
+                if (bufferingTrackId != song.id) {
+                    if (state.position > 0) {
+                        player.seekTo(state.position)
+                    }
+                    if (state.isPlaying) {
+                        player.resume()
+                    } else {
+                        player.pause()
+                    }
                 }
                 delay(500)
                 suppressPlaybackEvents = false
@@ -754,8 +829,12 @@ class DesktopListenTogetherClient(private val player: PlayerState) {
                 durationMs = t.duration,
             )
             if (player.currentSong?.id != song.id) {
-                player.playSong(song)
-                send(MessageTypes.BUFFER_READY, bufferReadyPayload(song.id))
+                pendingGuestPlayback = PendingGuestPlayback(
+                    action = if (state.isPlaying) PlaybackActions.PLAY else PlaybackActions.PAUSE,
+                    position = state.position,
+                )
+                startGuestTrack(song)
+                return
             }
         }
         if (state.isPlaying) {

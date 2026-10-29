@@ -16,19 +16,10 @@ dependencyResolutionManagement {
 //     id("org.gradle.toolchains.foojay-resolver-convention") version("1.0.0")
 // }
 
-rootProject.name = "Metrolist"
-include(":app")
+rootProject.name = "MetrolistDesktop"
 include(":innertube")
-include(":kugou")
-include(":lrclib")
-include(":kizzy")
-include(":lastfm")
-include(":betterlyrics")
-include(":simpmusic")
-include(":shazamkit")
 include(":shared")
 include(":desktop")
-include(":relay-server")
 
 // Use a local copy of NewPipe Extractor by uncommenting the lines below.
 // We assume, that Metrolist and NewPipe Extractor have the same parent directory.
