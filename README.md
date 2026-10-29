@@ -71,9 +71,10 @@ If you are unsure where to begin, open an issue and say what you would like to w
 
 ## Community and project status
 
-This is a community project looking for maintainers and contributors. It is not a commercial product, and features may change as the project develops. Please be respectful, provide reproducible bug reports, and mention your operating system when reporting desktop-specific issues.
+**Current maintainer:** [@mumtazka](https://github.com/mumtazka)
+
+This desktop fork is currently maintained by one person and is open to contributors. It is not a commercial product, and features may change as the project develops. Please be respectful, provide reproducible bug reports, and mention your operating system when reporting desktop-specific issues.
 
 ## License
 
 See [LICENSE](LICENSE) for the license terms.
-
