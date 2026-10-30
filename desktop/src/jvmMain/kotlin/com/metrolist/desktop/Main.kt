@@ -1941,7 +1941,7 @@ fun SearchResultRow(
                         modifier = Modifier.size(36.dp),
                     ) {
                         Icon(
-                            Icons.Rounded.AddCircleOutline, "Add to queue",
+                            Icons.AutoMirrored.Rounded.QueueMusic, "Add to queue",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
                         )
@@ -1957,7 +1957,7 @@ fun SearchResultRow(
                         modifier = Modifier.size(36.dp),
                     ) {
                         Icon(
-                            Icons.Rounded.AddCircleOutline, "Add to playlist",
+                            Icons.AutoMirrored.Rounded.PlaylistAdd, "Add to playlist",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp),
                         )

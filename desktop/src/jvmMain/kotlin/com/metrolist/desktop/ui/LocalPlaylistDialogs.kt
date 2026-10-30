@@ -11,11 +11,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.AddCircleOutline
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -47,14 +47,14 @@ fun AddToPlaylistButton(
             onClick = { showDialog = true },
             modifier = modifier,
         ) {
-            Icon(Icons.Rounded.AddCircleOutline, "Add to playlist")
+            Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add to playlist")
         }
     } else {
         OutlinedButton(
             onClick = { showDialog = true },
             modifier = modifier,
         ) {
-            Icon(Icons.Rounded.AddCircleOutline, null, Modifier.size(18.dp))
+            Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null, Modifier.size(18.dp))
             Spacer(Modifier.size(6.dp))
             Text("Playlist")
         }
